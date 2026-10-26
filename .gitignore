@@ -1,0 +1,4 @@
+workspaces/**
+.venv
+patch.txt
+.idea

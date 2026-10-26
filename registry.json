@@ -1,0 +1,16 @@
+{
+  "openai/qwen/qwen3-coder-next": {
+    "max_tokens": 262000,
+    "input_cost_per_token": 0.0,
+    "output_cost_per_token": 0.0,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "deepseek/deepseek-flash": {
+    "max_tokens": 128000,
+    "input_cost_per_token": 0.0,
+    "output_cost_per_token": 0.0,
+    "litellm_provider": "deepseek",
+    "mode": "chat"
+  }
+}
