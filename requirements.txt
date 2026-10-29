@@ -1,1 +1,3 @@
 mini-swe-agent==2.4.6
+pyan3==2.9.0
+python-dotenv==1.2.2

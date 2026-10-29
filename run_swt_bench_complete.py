@@ -1,24 +1,43 @@
+import os
 import sys
 import json
+import re
+import shlex
 import shutil
+import stat
 import subprocess
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from datasets import load_dataset
+from dotenv import load_dotenv
 from minisweagent import Agent
 from minisweagent.config import get_config_from_spec, builtin_config_dir
 from minisweagent.utils.serialize import recursive_merge
 from minisweagent.agents import get_agent
 from minisweagent.models import get_model
 from minisweagent.environments import get_environment
+from minisweagent.run.benchmarks.swebench import get_swebench_docker_image_name
+
+from callgraph_host import build_callgraph
 
 PROJECT_DIR = Path(__file__).resolve().parent
+load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "config_local_model.yaml"
 OUTPUT_DIR = PROJECT_DIR / "swebench_predictions"
 REPO_CACHE_DIR = PROJECT_DIR / "workspaces" / "repo_cache"
 WORKSPACE_DIR = PROJECT_DIR / "workspaces" / "instances"
+TRAJECTORY_DIR = PROJECT_DIR / "workspaces" / "trajectories"
+CALLGRAPH_DIR = PROJECT_DIR / "workspaces" / "callgraphs"
+CALLGRAPH_QUERY_SCRIPT = PROJECT_DIR / "callgraph_query.py"
+CONTAINER_CALLGRAPH_DIR = "/callgraph"
+
+DATASET_NAME = "eth-sri/SWT-bench_Verified_bm25_27k_zsp"  # SWT-bench Verified (433 instances)
 
 TEST_DIR_NAMES = {"test", "tests", "testing"}
+# unittest/pytest/django asserts, pytest.raises, and sympy's raises()
+ASSERTION_PATTERN = re.compile(r"\bassert\b|\.assert[A-Z]\w*\(|\braises\(|\.fail\(")
+SCRATCH_NAME_PATTERN = re.compile(r"repro|scratch|debug", re.IGNORECASE)
 
 
 def load_config():
@@ -40,6 +59,12 @@ def git(*args: str, cwd: Path) -> str:
     ).stdout
 
 
+def _clear_readonly_and_retry(func, path, exc):
+    # Git marks object files read-only; on Windows that blocks deletion.
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
 def prepare_workspace(instance: dict) -> Path:
     repo = instance["repo"]
     cache = REPO_CACHE_DIR / repo.replace("/", "__")
@@ -53,7 +78,7 @@ def prepare_workspace(instance: dict) -> Path:
 
     workspace = WORKSPACE_DIR / instance["instance_id"]
     if workspace.exists():
-        shutil.rmtree(workspace)
+        shutil.rmtree(workspace, onexc=_clear_readonly_and_retry)
     workspace.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "clone", "--quiet", "--shared", "--no-checkout", str(cache), str(workspace)],
@@ -61,6 +86,47 @@ def prepare_workspace(instance: dict) -> Path:
     )
     git("checkout", "--quiet", instance["base_commit"], cwd=workspace)
     return workspace
+
+
+def pull_image(image: str) -> None:
+    exists = subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
+    if not exists:
+        print(f"  Pulling {image} (first time only)...")
+        subprocess.run(["docker", "pull", "--quiet", image], check=True)
+
+
+def prepare_callgraph(instance: dict) -> Path:
+    """Runs pyan3 on the host against a checkout at the instance's base commit."""
+    workspace = prepare_workspace(instance)
+    out_dir = CALLGRAPH_DIR / instance["instance_id"]
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    n_files, n_edges = build_callgraph(workspace, out_dir)
+    shutil.copy(CALLGRAPH_QUERY_SCRIPT, out_dir / "query.py")
+    print(f"  Built call graph: {n_files} files, {n_edges} edges")
+    return out_dir
+
+
+def copy_into_container(env, host_dir: Path, container_dir: str) -> None:
+    subprocess.run(
+        ["docker", "cp", f"{host_dir}{os.sep}.", f"{env.container_id}:{container_dir}"],
+        check=True, capture_output=True,
+    )
+
+
+def remove_container(env) -> None:
+    # DockerEnvironment.cleanup() uses bash syntax that cmd.exe can't run on Windows,
+    # so the container would keep running until its 2h sleep ends.
+    if env.container_id:
+        subprocess.run(["docker", "rm", "-f", env.container_id], capture_output=True)
+        env.container_id = None
+
+
+def container_git(env, *args: str) -> str:
+    result = env.execute({"command": shlex.join(["git", "--no-pager", *args])})
+    if result["returncode"] != 0:
+        raise RuntimeError(f"git {args[0]} failed in container: {result['output']}")
+    return result["output"]
 
 
 def is_test_file(path: str, tracked_at_base: bool) -> bool:
@@ -74,28 +140,47 @@ def is_test_file(path: str, tracked_at_base: bool) -> bool:
     return len(p.parts) > 1 or tracked_at_base
 
 
-def extract_test_patch(workspace: Path, base_commit: str) -> str:
-    git("add", "-A", cwd=workspace)
-    tracked = set(git("ls-tree", "-r", "--name-only", base_commit, cwd=workspace).splitlines())
-    changed = git("diff", "--cached", "--name-only", base_commit, cwd=workspace).splitlines()
+def is_scratch_file(env, path: str, submitted: bool) -> bool:
+    """A new test file is scratch if it asserts nothing, or if the agent stopped before its
+    cleanup step (e.g. hit the step limit) and the file is named like a repro/debug script."""
+    content = env.execute({"command": shlex.join(["cat", path])})["output"]
+    if not ASSERTION_PATTERN.search(content):
+        return True
+    return not submitted and bool(SCRATCH_NAME_PATTERN.search(PurePosixPath(path).name))
+
+
+def extract_test_patch(env, base_commit: str, submitted: bool) -> str:
+    container_git(env, "add", "-A")
+    tracked = set(container_git(env, "ls-tree", "-r", "--name-only", base_commit).splitlines())
+    changed = container_git(env, "diff", "--cached", "--name-only", base_commit).splitlines()
 
     test_files = [f for f in changed if is_test_file(f, f in tracked)]
     skipped = [f for f in changed if f not in test_files]
     if skipped:
         print(f"  Excluded non-test changes from patch: {skipped}")
+    # Only new files can be scratch; edits to the repo's existing test files are always kept
+    scratch = [f for f in test_files if f not in tracked and is_scratch_file(env, f, submitted)]
+    if scratch:
+        print(f"  Excluded scratch test files from patch: {scratch}")
+        test_files = [f for f in test_files if f not in scratch]
     if not test_files:
         return ""
-    return git("diff", "--cached", base_commit, "--", *test_files, cwd=workspace)
+    return container_git(env, "diff", "--cached", base_commit, "--", *test_files)
 
 
-def run_agent_on_instance(agent: Agent, task: str, instance: dict, workspace: Path) -> dict:
+def run_agent_on_instance(agent: Agent, task: str, instance: dict) -> dict:
     instance_id = instance["instance_id"]
-    print(f"  Running agent on {instance_id} in {workspace}...")
+    print(f"  Running agent on {instance_id} in {agent.env.config.image}...")
+
+    # The SWE-bench images commit their environment setup on top of base_commit (including
+    # file-mode changes), so diff against the image's HEAD rather than base_commit.
+    start_commit = container_git(agent.env, "rev-parse", "HEAD").strip()
 
     result = agent.run(task)
-    print(f"  Exit status: {result.get('exit_status', 'unknown')}")
+    exit_status = result.get("exit_status", "unknown")
+    print(f"  Exit status: {exit_status}")
 
-    model_patch = extract_test_patch(workspace, instance["base_commit"])
+    model_patch = extract_test_patch(agent.env, start_commit, submitted=exit_status == "Submitted")
 
     return {
         "instance_id": instance_id,
@@ -117,13 +202,13 @@ def run_workflow():
     if len(sys.argv) > 1:
         instance_ids = sys.argv[1:]
     else:
-        print("No instance IDs provided. Using first instance from SWE-bench Lite for testing.")
+        print("No instance IDs provided. Using first instances from SWT-bench Verified for testing.")
         print("To specify instances: python run_swt_bench_complete.py instance_id1 instance_id2 ...")
         instance_ids = None
 
-    print("Loading SWE-bench Lite dataset...")
+    print(f"Loading {DATASET_NAME} dataset...")
     try:
-        dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+        dataset = load_dataset(DATASET_NAME, split="test")
         dataset_dict = {inst["instance_id"]: inst for inst in dataset}
 
         if instance_ids is None:
@@ -157,12 +242,16 @@ def run_workflow():
     for instance_id in instance_ids:
         print(f"[{len(predictions)+1}/{len(instance_ids)}] {instance_id}")
 
+        env_obj = None
         try:
             instance = dataset_dict[instance_id]
 
-            workspace = prepare_workspace(instance)
-            env_config = {**config.get("environment", {}), "cwd": str(workspace)}
-            env_obj = get_environment(env_config, default_type="local")
+            callgraph_dir = prepare_callgraph(instance)
+            image = get_swebench_docker_image_name(instance)
+            pull_image(image)
+            env_config = {**config.get("environment", {}), "image": image}
+            env_obj = get_environment(env_config, default_type="docker")
+            copy_into_container(env_obj, callgraph_dir, CONTAINER_CALLGRAPH_DIR)
 
             task = format_task(instance)
 
@@ -170,11 +259,16 @@ def run_workflow():
             agent = get_agent(
                 model=model_obj,
                 env=env_obj,
-                config=config.get("agent", {}),
+                # output_path makes the agent save its trajectory after every step
+                config={
+                    **config.get("agent", {}),
+                    # timestamped so re-running an instance never overwrites an earlier trajectory
+                    "output_path": TRAJECTORY_DIR / f"{instance_id}.{datetime.now():%Y%m%d-%H%M%S}.traj.json",
+                },
                 default_type="default"
             )
 
-            prediction = run_agent_on_instance(agent, task, instance, workspace)
+            prediction = run_agent_on_instance(agent, task, instance)
             predictions.append(prediction)
 
             print(f"  [OK] Generated patch ({len(prediction['model_patch'])} chars)")
@@ -190,6 +284,10 @@ def run_workflow():
                 "model_name_or_path": model_name,
                 "model_patch": ""
             })
+
+        finally:
+            if env_obj is not None:
+                remove_container(env_obj)
 
     print("Saving predictions...")
 
@@ -214,9 +312,9 @@ def run_workflow():
     print("1. Run SWT-Bench evaluation:")
     print("   cd ~/Documents/swt-bench")
     print("   source .venv/bin/activate")
-    print(f"   python -m src.main --dataset_name princeton-nlp/SWE-bench_Lite \\")
+    print(f"   python -m src.main --dataset_name {DATASET_NAME} \\")
     print(f"       --predictions_path {jsonl_path} \\")
-    print(f"       --filter_swt --max_workers 4 --run_id mini-swe-agent-run")
+    print(f"       --max_workers 4 --run_id mini-swe-agent-run")
     print("2. Check evaluation results in: run_instance_swt_logs/")
 
 
