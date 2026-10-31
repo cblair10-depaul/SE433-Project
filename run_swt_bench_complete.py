@@ -6,6 +6,10 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
+import threading
+import traceback
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
@@ -19,8 +23,6 @@ from minisweagent.models import get_model
 from minisweagent.environments import get_environment
 from minisweagent.run.benchmarks.swebench import get_swebench_docker_image_name
 
-from callgraph_host import build_callgraph
-
 PROJECT_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "config_local_model.yaml"
@@ -31,8 +33,11 @@ REPO_CACHE_DIR = PROJECT_DIR / "workspaces" / "repo_cache"
 WORKSPACE_DIR = PROJECT_DIR / "workspaces" / "instances"
 TRAJECTORY_DIR = PROJECT_DIR / "workspaces" / "trajectories"
 CALLGRAPH_DIR = PROJECT_DIR / "workspaces" / "callgraphs"
+CALLGRAPH_BUILD_SCRIPT = PROJECT_DIR / "callgraph_host.py"
 CALLGRAPH_QUERY_SCRIPT = PROJECT_DIR / "callgraph_query.py"
 CONTAINER_CALLGRAPH_DIR = "/callgraph"
+DEFAULT_WORKERS = 4
+CONTAINER_NAME_PREFIX = "minisweagent-"  # set by DockerEnvironment
 
 DATASET_NAME = "eth-sri/SWT-bench_Verified_bm25_27k_zsp"  # SWT-bench Verified (433 instances)
 
@@ -40,6 +45,14 @@ TEST_DIR_NAMES = {"test", "tests", "testing"}
 # unittest/pytest/django asserts, pytest.raises, and sympy's raises()
 ASSERTION_PATTERN = re.compile(r"\bassert\b|\.assert[A-Z]\w*\(|\braises\(|\.fail\(")
 SCRATCH_NAME_PATTERN = re.compile(r"repro|scratch|debug", re.IGNORECASE)
+
+REPO_CLONE_LOCK = threading.Lock()
+OUTPUT_LOCK = threading.Lock()
+
+
+def log(instance_id: str, message: str) -> None:
+    with OUTPUT_LOCK:
+        print(f"  [{instance_id}] {message}", flush=True)
 
 
 def load_config():
@@ -70,13 +83,15 @@ def _clear_readonly_and_retry(func, path, exc):
 def prepare_workspace(instance: dict) -> Path:
     repo = instance["repo"]
     cache = REPO_CACHE_DIR / repo.replace("/", "__")
-    if not cache.exists():
-        print(f"  Cloning {repo} (first time only)...")
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["git", "clone", "--quiet", f"https://github.com/{repo}.git", str(cache)],
-            check=True,
-        )
+    # Held while cloning so workers on the same repo can't clone it at the same time
+    with REPO_CLONE_LOCK:
+        if not cache.exists():
+            log(instance["instance_id"], f"Cloning {repo} (first time only)...")
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["git", "clone", "--quiet", f"https://github.com/{repo}.git", str(cache)],
+                check=True,
+            )
 
     workspace = WORKSPACE_DIR / instance["instance_id"]
     if workspace.exists():
@@ -90,19 +105,12 @@ def prepare_workspace(instance: dict) -> Path:
     return workspace
 
 
-def pull_image(image: str) -> bool:
-    """Returns True if the image had to be pulled, False if it was already present."""
+def pull_image(image: str, instance_id: str) -> None:
+    # Images are kept after use: they share layers, and later instances and reruns reuse them
     exists = subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
     if not exists:
-        print(f"  Pulling {image}...")
-        subprocess.run(["docker", "pull", "--quiet", image], check=True)
-    return not exists
-
-
-def remove_image(image: str) -> None:
-    result = subprocess.run(["docker", "rmi", image], capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"  Warning: could not remove {image}: {result.stderr.strip()}")
+        log(instance_id, f"Pulling {image}...")
+        subprocess.run(["docker", "pull", "--quiet", image], check=True, capture_output=True)
 
 
 def load_predictions() -> dict:
@@ -128,14 +136,32 @@ def save_predictions(predictions: dict) -> None:
 
 
 def prepare_callgraph(instance: dict) -> Path:
-    """Runs pyan3 on the host against a checkout at the instance's base commit."""
+    """Runs pyan3 on the host against a checkout at the instance's base commit.
+
+    The graph only depends on that commit, so a finished one is reused. Delete CALLGRAPH_DIR
+    after changing callgraph_host.py to rebuild them.
+    """
+    instance_id = instance["instance_id"]
+    out_dir = CALLGRAPH_DIR / instance_id
+    query_script = out_dir / "query.py"
+    # query.py is written last, so an interrupted build never counts as finished
+    if query_script.exists():
+        shutil.copy(CALLGRAPH_QUERY_SCRIPT, query_script)
+        log(instance_id, "Reusing saved call graph")
+        return out_dir
+
     workspace = prepare_workspace(instance)
-    out_dir = CALLGRAPH_DIR / instance["instance_id"]
     if out_dir.exists():
         shutil.rmtree(out_dir)
-    n_files, n_edges = build_callgraph(workspace, out_dir)
-    shutil.copy(CALLGRAPH_QUERY_SCRIPT, out_dir / "query.py")
-    print(f"  Built call graph: {n_files} files, {n_edges} edges")
+    # In its own process because pyan3 is CPU-bound, which threads wouldn't run in parallel
+    result = subprocess.run(
+        [sys.executable, str(CALLGRAPH_BUILD_SCRIPT), str(workspace), str(out_dir)],
+        capture_output=True, text=True, errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"call graph build failed: {result.stderr}")
+    shutil.copy(CALLGRAPH_QUERY_SCRIPT, query_script)
+    log(instance_id, f"Built call graph: {result.stdout.strip()}")
     return out_dir
 
 
@@ -152,6 +178,16 @@ def remove_container(env) -> None:
     if env.container_id:
         subprocess.run(["docker", "rm", "-f", env.container_id], capture_output=True)
         env.container_id = None
+
+
+def remove_all_containers() -> None:
+    result = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", f"name={CONTAINER_NAME_PREFIX}"],
+        capture_output=True, text=True,
+    )
+    container_ids = result.stdout.split()
+    if container_ids:
+        subprocess.run(["docker", "rm", "-f", *container_ids], capture_output=True)
 
 
 def container_git(env, *args: str) -> str:
@@ -181,7 +217,7 @@ def is_scratch_file(env, path: str, submitted: bool) -> bool:
     return not submitted and bool(SCRATCH_NAME_PATTERN.search(PurePosixPath(path).name))
 
 
-def extract_test_patch(env, base_commit: str, submitted: bool) -> str:
+def extract_test_patch(env, base_commit: str, submitted: bool, instance_id: str) -> str:
     container_git(env, "add", "-A")
     tracked = set(container_git(env, "ls-tree", "-r", "--name-only", base_commit).splitlines())
     changed = container_git(env, "diff", "--cached", "--name-only", base_commit).splitlines()
@@ -189,11 +225,11 @@ def extract_test_patch(env, base_commit: str, submitted: bool) -> str:
     test_files = [f for f in changed if is_test_file(f, f in tracked)]
     skipped = [f for f in changed if f not in test_files]
     if skipped:
-        print(f"  Excluded non-test changes from patch: {skipped}")
+        log(instance_id, f"Excluded non-test changes from patch: {skipped}")
     # Only new files can be scratch; edits to the repo's existing test files are always kept
     scratch = [f for f in test_files if f not in tracked and is_scratch_file(env, f, submitted)]
     if scratch:
-        print(f"  Excluded scratch test files from patch: {scratch}")
+        log(instance_id, f"Excluded scratch test files from patch: {scratch}")
         test_files = [f for f in test_files if f not in scratch]
     if not test_files:
         return ""
@@ -202,7 +238,7 @@ def extract_test_patch(env, base_commit: str, submitted: bool) -> str:
 
 def run_agent_on_instance(agent: Agent, task: str, instance: dict) -> dict:
     instance_id = instance["instance_id"]
-    print(f"  Running agent on {instance_id} in {agent.env.config.image}...")
+    log(instance_id, f"Running agent in {agent.env.config.image}...")
 
     # The SWE-bench images commit their environment setup on top of base_commit (including
     # file-mode changes), so diff against the image's HEAD rather than base_commit.
@@ -210,9 +246,9 @@ def run_agent_on_instance(agent: Agent, task: str, instance: dict) -> dict:
 
     result = agent.run(task)
     exit_status = result.get("exit_status", "unknown")
-    print(f"  Exit status: {exit_status}")
+    log(instance_id, f"Exit status: {exit_status}")
 
-    model_patch = extract_test_patch(agent.env, start_commit, submitted=exit_status == "Submitted")
+    model_patch = extract_test_patch(agent.env, start_commit, submitted=exit_status == "Submitted", instance_id=instance_id)
 
     return {
         "instance_id": instance_id,
@@ -221,14 +257,52 @@ def run_agent_on_instance(agent: Agent, task: str, instance: dict) -> dict:
     }
 
 
+def process_instance(instance: dict, config: dict, model_obj) -> dict:
+    """Runs on a worker thread. The model is shared: it keeps no per-run state."""
+    instance_id = instance["instance_id"]
+    env_obj = None
+    try:
+        callgraph_dir = prepare_callgraph(instance)
+        image = get_swebench_docker_image_name(instance)
+        pull_image(image, instance_id)
+        env_config = {**config.get("environment", {}), "image": image}
+        env_obj = get_environment(env_config, default_type="docker")
+        copy_into_container(env_obj, callgraph_dir, CONTAINER_CALLGRAPH_DIR)
+
+        task = format_task(instance)
+
+        # Create fresh agent for this instance (Don't cross contexts for better results)
+        agent = get_agent(
+            model=model_obj,
+            env=env_obj,
+            # output_path makes the agent save its trajectory after every step
+            config={
+                **config.get("agent", {}),
+                # timestamped so re-running an instance never overwrites an earlier trajectory
+                "output_path": TRAJECTORY_DIR / f"{instance_id}.{datetime.now():%Y%m%d-%H%M%S}.traj.json",
+            },
+            default_type="default"
+        )
+
+        return run_agent_on_instance(agent, task, instance)
+
+    finally:
+        if env_obj is not None:
+            remove_container(env_obj)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run mini-swe-agent on SWT-bench Verified instances.")
     parser.add_argument("instance_ids", nargs="*", help="instances to run (default: the first 5)")
     parser.add_argument("--all", action="store_true", help="run every instance in the dataset (433)")
     parser.add_argument("--fresh", action="store_true", help="discard saved predictions instead of resuming from them")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help=f"instances to run at the same time (default: {DEFAULT_WORKERS})")
     args = parser.parse_args()
     if args.all and args.instance_ids:
         parser.error("--all cannot be combined with instance IDs")
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
     return args
 
 
@@ -245,7 +319,8 @@ def run_workflow():
     print(f"Output directory: {OUTPUT_DIR}")
 
     if args.instance_ids:
-        instance_ids = args.instance_ids
+        # A duplicate ID would have two workers sharing one workspace
+        instance_ids = list(dict.fromkeys(args.instance_ids))
     else:
         if not args.all:
             print("No instance IDs provided. Using first instances from SWT-bench Verified for testing.")
@@ -292,62 +367,48 @@ def run_workflow():
     print("Setting up agent...")
     model_obj = get_model(config=config.get("model", {}))
 
-    print(f"\nProcessing {len(instance_ids)} instances...")
+    print(f"\nProcessing {len(instance_ids)} instances with {args.workers} workers...")
 
     errored = []
 
-    for index, instance_id in enumerate(instance_ids, start=1):
-        print(f"[{index}/{len(instance_ids)}] {instance_id}")
+    executor = ThreadPoolExecutor(max_workers=args.workers)
+    futures = {
+        executor.submit(process_instance, dataset_dict[instance_id], config, model_obj): instance_id
+        for instance_id in instance_ids
+    }
+    pending = set(futures)
+    n_finished = 0
+    try:
+        while pending:
+            # The timeout lets Ctrl+C through; a wait without one can't be interrupted on Windows
+            done, pending = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
+            # Results are handled only on this thread, so predictions needs no lock
+            for future in done:
+                instance_id = futures[future]
+                n_finished += 1
+                progress = f"[{n_finished}/{len(instance_ids)}]"
+                try:
+                    prediction = future.result()
+                except Exception as e:
+                    error_msg = str(e).replace('✗', '[ERROR]')
+                    log(instance_id, f"{progress} [ERROR] {error_msg}")
+                    with OUTPUT_LOCK:
+                        traceback.print_exception(e)
 
-        env_obj = None
-        pulled_image = None
-        try:
-            instance = dataset_dict[instance_id]
-
-            callgraph_dir = prepare_callgraph(instance)
-            image = get_swebench_docker_image_name(instance)
-            if pull_image(image):
-                pulled_image = image
-            env_config = {**config.get("environment", {}), "image": image}
-            env_obj = get_environment(env_config, default_type="docker")
-            copy_into_container(env_obj, callgraph_dir, CONTAINER_CALLGRAPH_DIR)
-
-            task = format_task(instance)
-
-            # Create fresh agent for this instance (Don't cross contexts for better results)
-            agent = get_agent(
-                model=model_obj,
-                env=env_obj,
-                # output_path makes the agent save its trajectory after every step
-                config={
-                    **config.get("agent", {}),
-                    # timestamped so re-running an instance never overwrites an earlier trajectory
-                    "output_path": TRAJECTORY_DIR / f"{instance_id}.{datetime.now():%Y%m%d-%H%M%S}.traj.json",
-                },
-                default_type="default"
-            )
-
-            prediction = run_agent_on_instance(agent, task, instance)
-            predictions[instance_id] = prediction
-            save_predictions(predictions)
-
-            print(f"  [OK] Generated patch ({len(prediction['model_patch'])} chars)")
-
-        except Exception as e:
-            error_msg = str(e).replace('✗', '[ERROR]')
-            print(f"  [ERROR] {error_msg}")
-            import traceback
-            traceback.print_exc()
-
-            # Not saved as a prediction, so the next run retries it
-            errored.append(instance_id)
-
-        finally:
-            if env_obj is not None:
-                remove_container(env_obj)
-            # Images that were already here are left alone; they may be in use elsewhere
-            if pulled_image is not None:
-                remove_image(pulled_image)
+                    # Not saved as a prediction, so the next run retries it
+                    errored.append(instance_id)
+                else:
+                    predictions[instance_id] = prediction
+                    save_predictions(predictions)
+                    log(instance_id, f"{progress} [OK] Generated patch ({len(prediction['model_patch'])} chars)")
+    except KeyboardInterrupt:
+        # Ctrl+C also kills the workers' docker commands, so their results can't be trusted.
+        # Finished instances are already saved; a rerun picks up everything else.
+        print("Interrupted: discarding running instances and removing their containers...", flush=True)
+        executor.shutdown(wait=False, cancel_futures=True)
+        remove_all_containers()
+        os._exit(130)
+    executor.shutdown()
 
     print("SUMMARY")
     print(f"Saved predictions: {len(predictions)}")

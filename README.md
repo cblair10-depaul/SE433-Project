@@ -20,6 +20,10 @@ DEEPSEEK_API_KEY=whatever-key-from-your-account-here
 .\.venv\Scripts\python.exe run_swt_bench_complete.py --all
 # Predictions are saved after each instance, and a rerun skips the ones already saved.
 # Named instances always rerun; --fresh discards everything saved and starts over.
+# Instances run in parallel: --workers N sets how many at once (default 4). Don't start a
+# second copy of the script, because each one overwrites the other's saved predictions.
+# Call graphs and Docker images are kept for reuse, about 0.8 GB of disk per image. Delete
+# workspaces\callgraphs after changing callgraph_host.py so the graphs get rebuilt.
 
 # 3. Evaluate with SWT-Bench
 cd ..\swt-bench
