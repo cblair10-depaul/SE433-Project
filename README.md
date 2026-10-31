@@ -5,8 +5,13 @@
 # 1. Load and inspect SWT-Bench instances
 .\.venv\Scripts\python.exe load_swt_bench_instances.py
 
-# 2. Run mini-swe-agent on instances
+# 2. Run mini-swe-agent on instances (first 5 by default)
 .\.venv\Scripts\python.exe run_swt_bench_complete.py
+# ...or on specific instances, or on all 433 (main.py takes the same arguments)
+.\.venv\Scripts\python.exe run_swt_bench_complete.py django__django-11055 sympy__sympy-20590
+.\.venv\Scripts\python.exe run_swt_bench_complete.py --all
+# Predictions are saved after each instance, and a rerun skips the ones already saved.
+# Named instances always rerun; --fresh discards everything saved and starts over.
 
 # 3. Evaluate with SWT-Bench
 cd ..\swt-bench

@@ -1,5 +1,5 @@
+import argparse
 import os
-import sys
 import json
 import re
 import shlex
@@ -25,6 +25,8 @@ PROJECT_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "config_local_model.yaml"
 OUTPUT_DIR = PROJECT_DIR / "swebench_predictions"
+PREDICTIONS_JSONL = OUTPUT_DIR / "predictions.jsonl"
+PREDICTIONS_JSON = OUTPUT_DIR / "preds.json"
 REPO_CACHE_DIR = PROJECT_DIR / "workspaces" / "repo_cache"
 WORKSPACE_DIR = PROJECT_DIR / "workspaces" / "instances"
 TRAJECTORY_DIR = PROJECT_DIR / "workspaces" / "trajectories"
@@ -88,11 +90,41 @@ def prepare_workspace(instance: dict) -> Path:
     return workspace
 
 
-def pull_image(image: str) -> None:
+def pull_image(image: str) -> bool:
+    """Returns True if the image had to be pulled, False if it was already present."""
     exists = subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
     if not exists:
-        print(f"  Pulling {image} (first time only)...")
+        print(f"  Pulling {image}...")
         subprocess.run(["docker", "pull", "--quiet", image], check=True)
+    return not exists
+
+
+def remove_image(image: str) -> None:
+    result = subprocess.run(["docker", "rmi", image], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  Warning: could not remove {image}: {result.stderr.strip()}")
+
+
+def load_predictions() -> dict:
+    """Returns the predictions saved by earlier runs, keyed by instance ID."""
+    if not PREDICTIONS_JSONL.exists():
+        return {}
+    with open(PREDICTIONS_JSONL) as f:
+        predictions = [json.loads(line) for line in f if line.strip()]
+    return {pred["instance_id"]: pred for pred in predictions}
+
+
+def write_atomically(path: Path, content: str) -> None:
+    # Replacing in one step means an interrupted run can't leave a half-written file
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(content)
+    os.replace(tmp_path, path)
+
+
+def save_predictions(predictions: dict) -> None:
+    preds = list(predictions.values())
+    write_atomically(PREDICTIONS_JSONL, "".join(json.dumps(pred) + "\n" for pred in preds))
+    write_atomically(PREDICTIONS_JSON, json.dumps(preds, indent=2))
 
 
 def prepare_callgraph(instance: dict) -> Path:
@@ -189,7 +221,20 @@ def run_agent_on_instance(agent: Agent, task: str, instance: dict) -> dict:
     }
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run mini-swe-agent on SWT-bench Verified instances.")
+    parser.add_argument("instance_ids", nargs="*", help="instances to run (default: the first 5)")
+    parser.add_argument("--all", action="store_true", help="run every instance in the dataset (433)")
+    parser.add_argument("--fresh", action="store_true", help="discard saved predictions instead of resuming from them")
+    args = parser.parse_args()
+    if args.all and args.instance_ids:
+        parser.error("--all cannot be combined with instance IDs")
+    return args
+
+
 def run_workflow():
+    args = parse_args()
+
     print("SWT-Bench Integration for mini-swe-agent")
 
     config = load_config()
@@ -199,11 +244,13 @@ def run_workflow():
     OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     print(f"Output directory: {OUTPUT_DIR}")
 
-    if len(sys.argv) > 1:
-        instance_ids = sys.argv[1:]
+    if args.instance_ids:
+        instance_ids = args.instance_ids
     else:
-        print("No instance IDs provided. Using first instances from SWT-bench Verified for testing.")
-        print("To specify instances: python run_swt_bench_complete.py instance_id1 instance_id2 ...")
+        if not args.all:
+            print("No instance IDs provided. Using first instances from SWT-bench Verified for testing.")
+            print("To specify instances: python run_swt_bench_complete.py instance_id1 instance_id2 ...")
+            print("To run every instance: python run_swt_bench_complete.py --all")
         instance_ids = None
 
     print(f"Loading {DATASET_NAME} dataset...")
@@ -211,8 +258,10 @@ def run_workflow():
         dataset = load_dataset(DATASET_NAME, split="test")
         dataset_dict = {inst["instance_id"]: inst for inst in dataset}
 
-        if instance_ids is None:
-            # Use first 1 instances as default test
+        if args.all:
+            instance_ids = list(dataset_dict.keys())
+        elif instance_ids is None:
+            # Use first 5 instances as default test
             instance_ids = list(dataset_dict.keys())[:5]
             print(f"Using instances: {instance_ids}")
         else:
@@ -232,23 +281,33 @@ def run_workflow():
         print("python run_swt_bench_complete.py django__django-11055 sympy__sympy-20590")
         return
 
+    predictions = {} if args.fresh else load_predictions()
+    # Instances named on the command line always run, replacing any saved prediction
+    if not args.instance_ids:
+        finished = [id for id in instance_ids if id in predictions]
+        if finished:
+            print(f"Skipping {len(finished)} instances with saved predictions (--fresh to rerun them)")
+            instance_ids = [id for id in instance_ids if id not in predictions]
+
     print("Setting up agent...")
     model_obj = get_model(config=config.get("model", {}))
 
     print(f"\nProcessing {len(instance_ids)} instances...")
 
-    predictions = []
+    errored = []
 
-    for instance_id in instance_ids:
-        print(f"[{len(predictions)+1}/{len(instance_ids)}] {instance_id}")
+    for index, instance_id in enumerate(instance_ids, start=1):
+        print(f"[{index}/{len(instance_ids)}] {instance_id}")
 
         env_obj = None
+        pulled_image = None
         try:
             instance = dataset_dict[instance_id]
 
             callgraph_dir = prepare_callgraph(instance)
             image = get_swebench_docker_image_name(instance)
-            pull_image(image)
+            if pull_image(image):
+                pulled_image = image
             env_config = {**config.get("environment", {}), "image": image}
             env_obj = get_environment(env_config, default_type="docker")
             copy_into_container(env_obj, callgraph_dir, CONTAINER_CALLGRAPH_DIR)
@@ -269,7 +328,8 @@ def run_workflow():
             )
 
             prediction = run_agent_on_instance(agent, task, instance)
-            predictions.append(prediction)
+            predictions[instance_id] = prediction
+            save_predictions(predictions)
 
             print(f"  [OK] Generated patch ({len(prediction['model_patch'])} chars)")
 
@@ -279,41 +339,33 @@ def run_workflow():
             import traceback
             traceback.print_exc()
 
-            predictions.append({
-                "instance_id": instance_id,
-                "model_name_or_path": model_name,
-                "model_patch": ""
-            })
+            # Not saved as a prediction, so the next run retries it
+            errored.append(instance_id)
 
         finally:
             if env_obj is not None:
                 remove_container(env_obj)
-
-    print("Saving predictions...")
-
-    jsonl_path = OUTPUT_DIR / "predictions.jsonl"
-    with open(jsonl_path, "w") as f:
-        for pred in predictions:
-            f.write(json.dumps(pred) + "\n")
-    print(f"    JSONL: {jsonl_path}")
-
-    json_path = OUTPUT_DIR / "preds.json"
-    with open(json_path, "w") as f:
-        json.dump(predictions, f, indent=2)
-    print(f"    JSON: {json_path}")
+            # Images that were already here are left alone; they may be in use elsewhere
+            if pulled_image is not None:
+                remove_image(pulled_image)
 
     print("SUMMARY")
-    print(f"Instances processed: {len(predictions)}")
-    print(f"Successfully generated patches: {sum(1 for p in predictions if p['model_patch'])}")
-    print(f"Failed instances: {sum(1 for p in predictions if not p['model_patch'])}")
+    print(f"Saved predictions: {len(predictions)}")
+    print(f"With a patch: {sum(1 for p in predictions.values() if p['model_patch'])}")
+    print(f"Without a patch: {sum(1 for p in predictions.values() if not p['model_patch'])}")
+    print(f"Errored this run (will retry on next run): {errored}")
     print(f"\nPredictions saved to: {OUTPUT_DIR}")
 
     print("NEXT STEPS")
     print("1. Run SWT-Bench evaluation:")
     print("   cd ~/Documents/swt-bench")
     print("   source .venv/bin/activate")
-    print(f"   python -m src.main --dataset_name {DATASET_NAME} \\")
-    print(f"       --predictions_path {jsonl_path} \\")
+    # Evaluate against princeton-nlp/SWE-bench_Verified + --filter_swt (= the same 433 instances).
+    # DATASET_NAME's eth-sri copy stores the reference test in `patch` and the code fix in
+    # `test_patch`; without --is_swt, SWT-bench reads them the SWE-bench way round and never
+    # applies the code fix, so no generated test can ever be fail-to-pass.
+    print("   python -m src.main --dataset_name princeton-nlp/SWE-bench_Verified --filter_swt \\")
+    print(f"       --predictions_path {PREDICTIONS_JSONL} \\")
     print(f"       --max_workers 4 --run_id mini-swe-agent-run")
     print("2. Check evaluation results in: run_instance_swt_logs/")
 
