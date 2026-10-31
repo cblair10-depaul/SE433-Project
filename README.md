@@ -1,6 +1,14 @@
 # MiniSWEAgent + SWT-Bench Integration
 ## Quick Start
 
+### Environment Setup
+1. Install Docker Desktop
+2. Go to platform.deepseek.com and sign up for an account, prefil your account with some $$$ and get an API key
+3. Create a .env file at the root of this directory and put your Deepseek API key in this format
+```
+DEEPSEEK_API_KEY=whatever-key-from-your-account-here
+```
+
 ```bash
 # 1. Load and inspect SWT-Bench instances
 .\.venv\Scripts\python.exe load_swt_bench_instances.py
