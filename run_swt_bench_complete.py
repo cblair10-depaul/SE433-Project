@@ -26,9 +26,11 @@ from minisweagent.run.benchmarks.swebench import get_swebench_docker_image_name
 PROJECT_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "config_local_model.yaml"
+BASELINE_CONFIG_PATH = PROJECT_DIR / "baseline_agent_config.yaml"
 OUTPUT_DIR = PROJECT_DIR / "swebench_predictions"
-PREDICTIONS_JSONL = OUTPUT_DIR / "predictions.jsonl"
-PREDICTIONS_JSON = OUTPUT_DIR / "preds.json"
+BASELINE_OUTPUT_DIR = PROJECT_DIR / "swebench_predictions_baseline"
+PREDICTIONS_JSONL_NAME = "predictions.jsonl"
+PREDICTIONS_JSON_NAME = "preds.json"
 REPO_CACHE_DIR = PROJECT_DIR / "workspaces" / "repo_cache"
 WORKSPACE_DIR = PROJECT_DIR / "workspaces" / "instances"
 TRAJECTORY_DIR = PROJECT_DIR / "workspaces" / "trajectories"
@@ -55,10 +57,10 @@ def log(instance_id: str, message: str) -> None:
         print(f"  [{instance_id}] {message}", flush=True)
 
 
-def load_config():
+def load_config(config_path: Path = CONFIG_PATH):
     config_spec = [
         str(builtin_config_dir / "mini.yaml"),
-        str(CONFIG_PATH),
+        str(config_path),
     ]
     configs = [get_config_from_spec(spec) for spec in config_spec]
     return recursive_merge(*configs)
@@ -113,11 +115,12 @@ def pull_image(image: str, instance_id: str) -> None:
         subprocess.run(["docker", "pull", "--quiet", image], check=True, capture_output=True)
 
 
-def load_predictions() -> dict:
+def load_predictions(output_dir: Path) -> dict:
     """Returns the predictions saved by earlier runs, keyed by instance ID."""
-    if not PREDICTIONS_JSONL.exists():
+    predictions_jsonl = output_dir / PREDICTIONS_JSONL_NAME
+    if not predictions_jsonl.exists():
         return {}
-    with open(PREDICTIONS_JSONL) as f:
+    with open(predictions_jsonl) as f:
         predictions = [json.loads(line) for line in f if line.strip()]
     return {pred["instance_id"]: pred for pred in predictions}
 
@@ -129,10 +132,10 @@ def write_atomically(path: Path, content: str) -> None:
     os.replace(tmp_path, path)
 
 
-def save_predictions(predictions: dict) -> None:
+def save_predictions(predictions: dict, output_dir: Path) -> None:
     preds = list(predictions.values())
-    write_atomically(PREDICTIONS_JSONL, "".join(json.dumps(pred) + "\n" for pred in preds))
-    write_atomically(PREDICTIONS_JSON, json.dumps(preds, indent=2))
+    write_atomically(output_dir / PREDICTIONS_JSONL_NAME, "".join(json.dumps(pred) + "\n" for pred in preds))
+    write_atomically(output_dir / PREDICTIONS_JSON_NAME, json.dumps(preds, indent=2))
 
 
 def prepare_callgraph(instance: dict) -> Path:
@@ -298,6 +301,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fresh", action="store_true", help="discard saved predictions instead of resuming from them")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                         help=f"instances to run at the same time (default: {DEFAULT_WORKERS})")
+    parser.add_argument("--baseline", action="store_true",
+                        help=f"use {BASELINE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
     args = parser.parse_args()
     if args.all and args.instance_ids:
         parser.error("--all cannot be combined with instance IDs")
@@ -311,12 +316,15 @@ def run_workflow():
 
     print("SWT-Bench Integration for mini-swe-agent")
 
-    config = load_config()
+    config_path = BASELINE_CONFIG_PATH if args.baseline else CONFIG_PATH
+    print(f"Config: {config_path.name}")
+    config = load_config(config_path)
     model_name = config.get("model", {}).get("model_name", "unknown")
     print(f"Model: {model_name}")
 
-    OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
-    print(f"Output directory: {OUTPUT_DIR}")
+    output_dir = BASELINE_OUTPUT_DIR if args.baseline else OUTPUT_DIR
+    output_dir.mkdir(exist_ok=True, parents=True)
+    print(f"Output directory: {output_dir}")
 
     if args.instance_ids:
         # A duplicate ID would have two workers sharing one workspace
@@ -356,7 +364,7 @@ def run_workflow():
         print("python run_swt_bench_complete.py django__django-11055 sympy__sympy-20590")
         return
 
-    predictions = {} if args.fresh else load_predictions()
+    predictions = {} if args.fresh else load_predictions(output_dir)
     # Instances named on the command line always run, replacing any saved prediction
     if not args.instance_ids:
         finished = [id for id in instance_ids if id in predictions]
@@ -399,7 +407,7 @@ def run_workflow():
                     errored.append(instance_id)
                 else:
                     predictions[instance_id] = prediction
-                    save_predictions(predictions)
+                    save_predictions(predictions, output_dir)
                     log(instance_id, f"{progress} [OK] Generated patch ({len(prediction['model_patch'])} chars)")
     except KeyboardInterrupt:
         # Ctrl+C also kills the workers' docker commands, so their results can't be trusted.
@@ -415,7 +423,7 @@ def run_workflow():
     print(f"With a patch: {sum(1 for p in predictions.values() if p['model_patch'])}")
     print(f"Without a patch: {sum(1 for p in predictions.values() if not p['model_patch'])}")
     print(f"Errored this run (will retry on next run): {errored}")
-    print(f"\nPredictions saved to: {OUTPUT_DIR}")
+    print(f"\nPredictions saved to: {output_dir}")
 
     print("NEXT STEPS")
     print("1. Run SWT-Bench evaluation:")
@@ -426,8 +434,10 @@ def run_workflow():
     # `test_patch`; without --is_swt, SWT-bench reads them the SWE-bench way round and never
     # applies the code fix, so no generated test can ever be fail-to-pass.
     print("   python -m src.main --dataset_name princeton-nlp/SWE-bench_Verified --filter_swt \\")
-    print(f"       --predictions_path {PREDICTIONS_JSONL} \\")
-    print(f"       --max_workers 4 --run_id mini-swe-agent-run")
+    print(f"       --predictions_path {output_dir / PREDICTIONS_JSONL_NAME} \\")
+    # A separate run ID keeps the baseline's evaluation logs apart from the main run's
+    run_id = "mini-swe-agent-baseline" if args.baseline else "mini-swe-agent-run"
+    print(f"       --max_workers 4 --run_id {run_id}")
     print("2. Check evaluation results in: run_instance_swt_logs/")
 
 

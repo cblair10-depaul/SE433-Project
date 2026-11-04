@@ -1,0 +1,103 @@
+model:
+  model_name: "deepseek/deepseek-flash"
+  model_kwargs:
+    api_base: "https://api.deepseek.com"
+    drop_params: true
+  litellm_model_registry: "registry.json"
+  cost_tracking: "ignore_errors"
+
+agent:
+  step_limit: 100
+  system_template: |
+    You are a helpful assistant that can interact with a computer.
+  instance_template: |
+    Please generate test cases that reproduce the bug described in the issue below. Do NOT fix the issue.
+    
+    You can execute bash commands and edit files to create test files. Your current working directory is the root of
+    the repository, checked out at the commit that contains the bug.
+    
+    ## Issue
+    {{task}}
+    
+    ## Instructions
+    1. Analyze the codebase by finding and reading relevant files
+    2. Create a script to reproduce the issue
+    3. Create at most 3 new tests, choosing the ones closest to the exact scenario described in the issue. Every test you submit must fail on the current code AND pass once the bug is correctly fixed; a single test that would still fail after a correct fix makes your whole submission fail, so one certain test is better than several uncertain ones. Only create tests that do not duplicate conditions checked by existing tests. Each test must check the observable behavior described in the issue (return values, query results, raised exceptions, output) through the public API. Do NOT assume how the fix will be implemented:
+       - do not assert on implementation details such as object identity (`is` / `assertIs` / `assertIsNot`), private attributes, or internal data structures;
+       - do not assert the exact wording of an error or warning message unless the issue quotes it; assert the exception or warning type and, at most, a key value from the issue (for example a column or argument name);
+       - do not assert an exact return type, a new function or argument name, or a new API unless the issue explicitly names it;
+       - if the issue asks for new behavior or a new feature (rather than reporting a bug), test only the specific inputs and results the issue states.
+    4. <important>This step is mandatory: you MUST run your new tests and see their output before submitting.</important> Run only the test file(s) you changed, using the repository's test runner:
+       - django: `cd tests && python runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 <module.path>` (e.g. `queries.tests`)
+       - sympy: `bin/test -C --verbose <path/to/test_file.py>`
+       - all other repositories: `python -m pytest <path/to/test_file.py> -k <test_name> -rA`
+       Then review each new test:
+       - Remove it if it passes.
+       - If it fails, read the failure message. If the failure comes from a mistake in your test (a typo, a wrong import, a missing fixture), fix the test and run it again.
+       - For each remaining failing test, write one sentence explaining why it will pass once the bug is fixed, based only on the issue text. If you cannot explain this without guessing how the fix is implemented, remove the test.
+       Keep the existing tests in the file passing; do not change or remove them.
+    5. If no failing tests remain after step 4: repeat steps 3-4 up to 2 times until a failed test is created or the limit of 2 is reached.
+    6. Do NOT modify any non-test source files and do NOT attempt to fix the issue. Only add or edit tests inside the repository's existing test suite (e.g. a `tests/` directory or `test_*.py` files next to existing tests). Delete the reproduction script from step 2 and any other scratch files before submitting. Work only from the issue text and the code in this repository: do NOT search the internet, git history, or the filesystem outside the repository for the official fix or its tests.
+    7. Leave your new tests in place (do not commit or revert them). They are collected automatically with `git diff` when you submit.
+    8. Do not submit until you have run your new tests in step 4 and seen them fail. Submit your final output by issuing: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`. Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>
+    
+    ## Useful command examples
+    ### Create a new file:
+    ```bash
+    cat <<'EOF' > newfile.py
+    import numpy as np
+    hello = "world"
+    print(hello)
+    EOF
+    ```
+    
+    ### View file content:
+    ```bash
+    # View specific lines with numbers
+    nl -ba filename.py | sed -n '10,20p'
+    ```
+    
+    ### Any other command you want to run
+    ```bash
+    anything
+    ```
+    
+    ## Behavioral Specification
+    This is the behavioral specification for the add function in example/NumberUtils.py:
+    
+    - Single Input possible data types (for left and right arguments to add()):
+      - null
+      - Empty list
+      - List with exactly 1 element
+      - List with more than 1 element
+    - Combination of Inputs to the add() function:
+      - Left operand present, right operand absent
+      - Left operand absent, right operand present
+      - Both left and right operands present
+    - Output Partitions:
+      - Result is null
+      - Result is an empty list
+      - Result is a list with more than 1 element
+    - Boundary Analysis (for valid left or right arguments for the add() function):
+      - On-point values: 0, 9
+      - Off-point values: -1, 10
+
+
+environment:
+  # Each instance runs in its prebuilt SWE-bench Docker image (see run_swt_bench_complete.py)
+  cwd: "/testbed"
+  timeout: 300
+  interpreter: ["bash", "-c"]
+  # No network inside the container, so the agent can't look up the official fix online
+  run_args: ["--rm", "--network", "none"]
+  env:
+    # bash -c doesn't source ~/.bashrc on its own; this makes it activate the image's testbed conda env
+    BASH_ENV: /root/.bashrc
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PIP_PROGRESS_BAR: 'off'
+    TQDM_DISABLE: '1'
+
+run:
+  output_path: "last_mini_run.traj.json"
