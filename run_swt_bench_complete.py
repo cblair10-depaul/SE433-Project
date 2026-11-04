@@ -1,4 +1,5 @@
 import argparse
+import importlib.util
 import os
 import json
 import re
@@ -34,10 +35,10 @@ PREDICTIONS_JSON_NAME = "preds.json"
 REPO_CACHE_DIR = PROJECT_DIR / "workspaces" / "repo_cache"
 WORKSPACE_DIR = PROJECT_DIR / "workspaces" / "instances"
 TRAJECTORY_DIR = PROJECT_DIR / "workspaces" / "trajectories"
-CALLGRAPH_DIR = PROJECT_DIR / "workspaces" / "callgraphs"
-CALLGRAPH_BUILD_SCRIPT = PROJECT_DIR / "callgraph_host.py"
-CALLGRAPH_QUERY_SCRIPT = PROJECT_DIR / "callgraph_query.py"
-CONTAINER_CALLGRAPH_DIR = "/callgraph"
+CFG_DIR = PROJECT_DIR / "workspaces" / "cfgs"
+CFG_BUILD_SCRIPT = PROJECT_DIR / "cfg_host.py"
+CFG_QUERY_SCRIPT = PROJECT_DIR / "cfg_query.py"
+CONTAINER_CFG_DIR = "/cfg"
 DEFAULT_WORKERS = 4
 CONTAINER_NAME_PREFIX = "minisweagent-"  # set by DockerEnvironment
 
@@ -138,33 +139,34 @@ def save_predictions(predictions: dict, output_dir: Path) -> None:
     write_atomically(output_dir / PREDICTIONS_JSON_NAME, json.dumps(preds, indent=2))
 
 
-def prepare_callgraph(instance: dict) -> Path:
-    """Runs pyan3 on the host against a checkout at the instance's base commit.
+def prepare_cfgs(instance: dict) -> Path:
+    """Builds control flow graphs with python-graphs on the host against a checkout at the
+    instance's base commit.
 
-    The graph only depends on that commit, so a finished one is reused. Delete CALLGRAPH_DIR
-    after changing callgraph_host.py to rebuild them.
+    The graphs only depend on that commit, so finished ones are reused. Delete CFG_DIR
+    after changing cfg_host.py to rebuild them.
     """
     instance_id = instance["instance_id"]
-    out_dir = CALLGRAPH_DIR / instance_id
+    out_dir = CFG_DIR / instance_id
     query_script = out_dir / "query.py"
     # query.py is written last, so an interrupted build never counts as finished
     if query_script.exists():
-        shutil.copy(CALLGRAPH_QUERY_SCRIPT, query_script)
-        log(instance_id, "Reusing saved call graph")
+        shutil.copy(CFG_QUERY_SCRIPT, query_script)
+        log(instance_id, "Reusing saved control flow graphs")
         return out_dir
 
     workspace = prepare_workspace(instance)
     if out_dir.exists():
         shutil.rmtree(out_dir)
-    # In its own process because pyan3 is CPU-bound, which threads wouldn't run in parallel
+    # In its own process because the build is CPU-bound, which threads wouldn't run in parallel
     result = subprocess.run(
-        [sys.executable, str(CALLGRAPH_BUILD_SCRIPT), str(workspace), str(out_dir)],
+        [sys.executable, str(CFG_BUILD_SCRIPT), str(workspace), str(out_dir)],
         capture_output=True, text=True, errors="replace",
     )
     if result.returncode != 0:
-        raise RuntimeError(f"call graph build failed: {result.stderr}")
-    shutil.copy(CALLGRAPH_QUERY_SCRIPT, query_script)
-    log(instance_id, f"Built call graph: {result.stdout.strip()}")
+        raise RuntimeError(f"control flow graph build failed: {result.stderr}")
+    shutil.copy(CFG_QUERY_SCRIPT, query_script)
+    log(instance_id, f"Built control flow graphs: {result.stdout.strip()}")
     return out_dir
 
 
@@ -265,12 +267,12 @@ def process_instance(instance: dict, config: dict, model_obj) -> dict:
     instance_id = instance["instance_id"]
     env_obj = None
     try:
-        callgraph_dir = prepare_callgraph(instance)
+        cfg_dir = prepare_cfgs(instance)
         image = get_swebench_docker_image_name(instance)
         pull_image(image, instance_id)
         env_config = {**config.get("environment", {}), "image": image}
         env_obj = get_environment(env_config, default_type="docker")
-        copy_into_container(env_obj, callgraph_dir, CONTAINER_CALLGRAPH_DIR)
+        copy_into_container(env_obj, cfg_dir, CONTAINER_CFG_DIR)
 
         task = format_task(instance)
 
@@ -311,8 +313,20 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def check_cfg_dependencies() -> None:
+    """cfg_host.py runs under this interpreter, so a missing python-graphs would otherwise
+    fail every instance without saved graphs, one at a time."""
+    missing = [name for name in ("python_graphs", "gast", "absl")
+               if importlib.util.find_spec(name) is None]
+    if missing:
+        sys.exit(f"{sys.executable} is missing {', '.join(missing)}, which cfg_host.py needs.\n"
+                 "Run with the project venv (.\\.venv\\Scripts\\python.exe) or "
+                 "install requirements.txt into this interpreter.")
+
+
 def run_workflow():
     args = parse_args()
+    check_cfg_dependencies()
 
     print("SWT-Bench Integration for mini-swe-agent")
 
@@ -345,7 +359,7 @@ def run_workflow():
             instance_ids = list(dataset_dict.keys())
         elif instance_ids is None:
             # Use first 5 instances as default test
-            instance_ids = list(dataset_dict.keys())[:5]
+            instance_ids = list(dataset_dict.keys())[:10]
             print(f"Using instances: {instance_ids}")
         else:
             # Filter to only requested instances

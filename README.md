@@ -22,8 +22,8 @@ DEEPSEEK_API_KEY=whatever-key-from-your-account-here
 # Named instances always rerun; --fresh discards everything saved and starts over.
 # Instances run in parallel: --workers N sets how many at once (default 4). Don't start a
 # second copy of the script, because each one overwrites the other's saved predictions.
-# Call graphs and Docker images are kept for reuse, about 0.8 GB of disk per image. Delete
-# workspaces\callgraphs after changing callgraph_host.py so the graphs get rebuilt.
+# Control flow graphs and Docker images are kept for reuse, about 0.8 GB of disk per image.
+# Delete workspaces\cfgs after changing cfg_host.py so the graphs get rebuilt.
 
 # 3. Evaluate with SWT-Bench
 cd ..\swt-bench
