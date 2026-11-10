@@ -30,6 +30,7 @@ agent:
        - do not assert the exact wording of an error or warning message unless the issue quotes it; assert the exception or warning type and, at most, a key value from the issue (for example a column or argument name);
        - do not assert an exact return type, a new function or argument name, or a new API unless the issue explicitly names it;
        - if the issue asks for new behavior or a new feature (rather than reporting a bug), test only the specific inputs and results the issue states.
+       - make sure the new test has an explicit check (such as an assertion statement) in it.
     7. <important>This step is mandatory: you MUST run your new tests and see their output before submitting.</important> Run only the test file(s) you changed, using the repository's test runner:
        - django: `cd tests && python runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 <module.path>` (e.g. `queries.tests`)
        - sympy: `bin/test -C --verbose <path/to/test_file.py>`
@@ -37,6 +38,7 @@ agent:
        Then review each new test:
        - Remove it if it passes.
        - If it fails, read the failure message. If the failure comes from a mistake in your test (a typo, a wrong import, a missing fixture), fix the test and run it again.
+       - Make sure the new test has an explicit check (such as an assertion statement) of a value or values in it. If there are no explicit checks such as an assertion check in the test, remove the test.
        - For each remaining failing test, write one sentence explaining why it will pass once the bug is fixed, based only on the issue text. If you cannot explain this without guessing how the fix is implemented, remove the test.
        Keep the existing tests in the file passing; do not change or remove them.
     8. If no failing tests remain after step 7: repeat steps 4-6 up to 2 times until a failed test is created or the limit of 2 is reached.
@@ -84,6 +86,12 @@ agent:
     - Boundary Analysis (for valid left or right arguments for the add() function):
       - On-point values: 0, 9
       - Off-point values: -1, 10
+    
+    Boundary analysis on-point values check the conditional statement returns a true statement, and off-point values check that the conditional statement returns a false value. However, we need the tightest tolerance values possible in between on-point and off-point values to make 
+    the conditional go from true (on-point) to false (off-point). So we want to test the first value that makes the conditional true (on-point) and the first value that makes the conditional false (off-point) to check this boundary
+    from true to false of the conditional. So, for example, a conditional of `x < 10`, the on-point value would be `9` since it's the last value that makes the condition statement true, and `10` would be the off-point value
+    because it's the first value that makes the conditional false. We want a test value on both sides of this conditional statement (last value to make it true, and first to make it false) so we can detect when the value of `x`
+    causes a behavior change.
 
 
 environment:
