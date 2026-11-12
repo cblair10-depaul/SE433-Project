@@ -61,27 +61,6 @@ agent:
     ```bash
     anything
     ```
-    
-    ## Behavioral Specification
-    This is the behavioral specification for the add function in example/NumberUtils.py:
-    
-    - Single Input possible data types (for left and right arguments to add()):
-      - null
-      - Empty list
-      - List with exactly 1 element
-      - List with more than 1 element
-    - Combination of Inputs to the add() function:
-      - Left operand present, right operand absent
-      - Left operand absent, right operand present
-      - Both left and right operands present
-    - Output Partitions:
-      - Result is null
-      - Result is an empty list
-      - Result is a list with more than 1 element
-    - Boundary Analysis (for valid left or right arguments for the add() function):
-      - On-point values: 0, 9
-      - Off-point values: -1, 10
-
 
 environment:
   # Each instance runs in its prebuilt SWE-bench Docker image (see run_swt_bench_complete.py)
