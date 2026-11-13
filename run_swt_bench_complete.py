@@ -26,7 +26,7 @@ from minisweagent.run.benchmarks.swebench import get_swebench_docker_image_name
 
 PROJECT_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_DIR / ".env")
-CONFIG_PATH = PROJECT_DIR / "config_local_model.yaml"
+CONFIG_PATH = PROJECT_DIR / "new_workflow_complete.yaml"
 BASELINE_CONFIG_PATH = PROJECT_DIR / "new_workflow_without_cfg_or_partition.yaml"
 DEFAULT_MINI_SWE_CONFIG_PATH = PROJECT_DIR / "default_swe_mini_config.yaml"
 OUTPUT_DIR = PROJECT_DIR / "swebench_predictions"

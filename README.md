@@ -28,7 +28,7 @@ DEEPSEEK_API_KEY=whatever-key-from-your-account-here
 # Pick a different agent config (use at most one of these flags):
 #   --new-workflow-without-cfg-or-partition   new_workflow_without_cfg_or_partition.yaml
 #   --default-mini-swe-config                 default_swe_mini_config.yaml
-# Without either flag, config_local_model.yaml is used.
+# Without either flag, new_workflow_complete.yaml is used.
 .\.venv\Scripts\python.exe run_swt_bench_complete.py --new-workflow-without-cfg-or-partition
 .\.venv\Scripts\python.exe run_swt_bench_complete.py --default-mini-swe-config
 
