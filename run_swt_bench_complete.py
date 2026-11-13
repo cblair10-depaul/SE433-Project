@@ -27,7 +27,7 @@ from minisweagent.run.benchmarks.swebench import get_swebench_docker_image_name
 PROJECT_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "config_local_model.yaml"
-BASELINE_CONFIG_PATH = PROJECT_DIR / "baseline_agent_config.yaml"
+BASELINE_CONFIG_PATH = PROJECT_DIR / "new_workflow_without_cfg_or_partition.yaml"
 DEFAULT_MINI_SWE_CONFIG_PATH = PROJECT_DIR / "default_swe_mini_config.yaml"
 OUTPUT_DIR = PROJECT_DIR / "swebench_predictions"
 BASELINE_OUTPUT_DIR = PROJECT_DIR / "swebench_predictions_baseline"
@@ -300,13 +300,13 @@ def process_instance(instance: dict, config: dict, model_obj) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run mini-swe-agent on SWT-bench Verified instances.")
-    parser.add_argument("instance_ids", nargs="*", help="instances to run (default: the first 5)")
+    parser.add_argument("instance_ids", nargs="*", help="instances to run (default: the first 10)")
     parser.add_argument("--all", action="store_true", help="run every instance in the dataset (433)")
     parser.add_argument("--fresh", action="store_true", help="discard saved predictions instead of resuming from them")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                         help=f"instances to run at the same time (default: {DEFAULT_WORKERS})")
     config_group = parser.add_mutually_exclusive_group()
-    config_group.add_argument("--baseline", action="store_true",
+    config_group.add_argument("--new-workflow-without-cfg-or-partition", action="store_true",
                               help=f"use {BASELINE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
     config_group.add_argument("--default-mini-swe-config", action="store_true",
                               help=f"use {DEFAULT_MINI_SWE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
@@ -335,7 +335,7 @@ def run_workflow():
 
     print("SWT-Bench Integration for mini-swe-agent")
 
-    if args.baseline:
+    if args.new_workflow_without_cfg_or_partition:
         config_path, output_dir, run_id = BASELINE_CONFIG_PATH, BASELINE_OUTPUT_DIR, "mini-swe-agent-baseline"
     elif args.default_mini_swe_config:
         config_path, output_dir, run_id = (DEFAULT_MINI_SWE_CONFIG_PATH, DEFAULT_MINI_SWE_OUTPUT_DIR,
@@ -368,7 +368,7 @@ def run_workflow():
         if args.all:
             instance_ids = list(dataset_dict.keys())
         elif instance_ids is None:
-            # Use first 5 instances as default test
+            # Use first 10 instances as default test
             instance_ids = list(dataset_dict.keys())[:10]
             print(f"Using instances: {instance_ids}")
         else:
