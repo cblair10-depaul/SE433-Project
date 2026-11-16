@@ -26,10 +26,12 @@ from minisweagent.run.benchmarks.swebench import get_swebench_docker_image_name
 
 PROJECT_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_DIR / ".env")
-CONFIG_PATH = PROJECT_DIR / "config_local_model.yaml"
-BASELINE_CONFIG_PATH = PROJECT_DIR / "baseline_agent_config.yaml"
+CONFIG_PATH = PROJECT_DIR / "new_workflow_complete.yaml"
+BASELINE_CONFIG_PATH = PROJECT_DIR / "new_workflow_without_cfg_or_partition.yaml"
+DEFAULT_MINI_SWE_CONFIG_PATH = PROJECT_DIR / "default_swe_mini_config.yaml"
 OUTPUT_DIR = PROJECT_DIR / "swebench_predictions"
 BASELINE_OUTPUT_DIR = PROJECT_DIR / "swebench_predictions_baseline"
+DEFAULT_MINI_SWE_OUTPUT_DIR = PROJECT_DIR / "swebench_predictions_default_mini_swe"
 PREDICTIONS_JSONL_NAME = "predictions.jsonl"
 PREDICTIONS_JSON_NAME = "preds.json"
 REPO_CACHE_DIR = PROJECT_DIR / "workspaces" / "repo_cache"
@@ -298,13 +300,16 @@ def process_instance(instance: dict, config: dict, model_obj) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run mini-swe-agent on SWT-bench Verified instances.")
-    parser.add_argument("instance_ids", nargs="*", help="instances to run (default: the first 5)")
+    parser.add_argument("instance_ids", nargs="*", help="instances to run (default: the first 10)")
     parser.add_argument("--all", action="store_true", help="run every instance in the dataset (433)")
     parser.add_argument("--fresh", action="store_true", help="discard saved predictions instead of resuming from them")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                         help=f"instances to run at the same time (default: {DEFAULT_WORKERS})")
-    parser.add_argument("--baseline", action="store_true",
-                        help=f"use {BASELINE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
+    config_group = parser.add_mutually_exclusive_group()
+    config_group.add_argument("--new-workflow-without-cfg-or-partition", action="store_true",
+                              help=f"use {BASELINE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
+    config_group.add_argument("--default-mini-swe-config", action="store_true",
+                              help=f"use {DEFAULT_MINI_SWE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
     args = parser.parse_args()
     if args.all and args.instance_ids:
         parser.error("--all cannot be combined with instance IDs")
@@ -330,13 +335,18 @@ def run_workflow():
 
     print("SWT-Bench Integration for mini-swe-agent")
 
-    config_path = BASELINE_CONFIG_PATH if args.baseline else CONFIG_PATH
+    if args.new_workflow_without_cfg_or_partition:
+        config_path, output_dir, run_id = BASELINE_CONFIG_PATH, BASELINE_OUTPUT_DIR, "mini-swe-agent-baseline"
+    elif args.default_mini_swe_config:
+        config_path, output_dir, run_id = (DEFAULT_MINI_SWE_CONFIG_PATH, DEFAULT_MINI_SWE_OUTPUT_DIR,
+                                           "mini-swe-agent-default")
+    else:
+        config_path, output_dir, run_id = CONFIG_PATH, OUTPUT_DIR, "mini-swe-agent-run"
     print(f"Config: {config_path.name}")
     config = load_config(config_path)
     model_name = config.get("model", {}).get("model_name", "unknown")
     print(f"Model: {model_name}")
 
-    output_dir = BASELINE_OUTPUT_DIR if args.baseline else OUTPUT_DIR
     output_dir.mkdir(exist_ok=True, parents=True)
     print(f"Output directory: {output_dir}")
 
@@ -358,7 +368,7 @@ def run_workflow():
         if args.all:
             instance_ids = list(dataset_dict.keys())
         elif instance_ids is None:
-            # Use first 5 instances as default test
+            # Use first 10 instances as default test
             instance_ids = list(dataset_dict.keys())[:10]
             print(f"Using instances: {instance_ids}")
         else:
@@ -449,8 +459,7 @@ def run_workflow():
     # applies the code fix, so no generated test can ever be fail-to-pass.
     print("   python -m src.main --dataset_name princeton-nlp/SWE-bench_Verified --filter_swt \\")
     print(f"       --predictions_path {output_dir / PREDICTIONS_JSONL_NAME} \\")
-    # A separate run ID keeps the baseline's evaluation logs apart from the main run's
-    run_id = "mini-swe-agent-baseline" if args.baseline else "mini-swe-agent-run"
+    # Each config has its own run ID so their evaluation logs stay apart
     print(f"       --max_workers 4 --run_id {run_id}")
     print("2. Check evaluation results in: run_instance_swt_logs/")
 
