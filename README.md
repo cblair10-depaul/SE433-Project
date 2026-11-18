@@ -46,10 +46,10 @@ python -m src.main --dataset_name princeton-nlp/SWE-bench_Lite ^
 |------|---------|
 | `swebench_predictions/predictions.jsonl` | JSONL format for SWT-Bench evaluation |
 | `swebench_predictions/preds.json` | JSON list format (also accepted by SWT-Bench) |
-| `swebench_predictions_baseline/` | The same files for runs with `--new-workflow-without-cfg-or-partition` |
+| `swebench_predictions_no_cfg/` | The same files for runs with `--new-workflow-without-cfg-or-partition` |
 | `swebench_predictions_default_mini_swe/` | The same files for runs with `--default-mini-swe-config` |
 
 Each config keeps its own saved predictions, so resuming one run never skips instances finished
 under a different config. The evaluation command printed at the end of a run uses a matching
-`--run_id` (`mini-swe-agent-run`, `mini-swe-agent-baseline` or `mini-swe-agent-default`).
+`--run_id` (`mini-swe-agent-run`, `mini-swe-agent-no-cfg` or `mini-swe-agent-default`).
 

@@ -1,0 +1,287 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Specification-First Test Design for LLM Regression Test Generation:\\
+A SWT-Bench Study with mini-SWE-agent and DeepSeek}
+
+\author{\IEEEauthorblockN{Casey Blair}
+\IEEEauthorblockA{\textit{SE 443/333} \\
+\textit{DePaul University}\\
+Chicago, IL, USA}
+\and
+\IEEEauthorblockN{Jamya Whitman}
+\IEEEauthorblockA{\textit{SE 443/333} \\
+\textit{DePaul University}\\
+Chicago, IL, USA}
+}
+
+\maketitle
+
+\begin{abstract}
+% TODO: Abstract.
+\end{abstract}
+
+\begin{IEEEkeywords}
+% TODO: Keywords.
+\end{IEEEkeywords}
+
+\section{Research Question and Motivation}
+\label{sec:rq}
+
+\subsection{Motivation}
+We investigate whether an LLM coding agent can write better \emph{reproduction tests}, tests that fail on buggy code and pass once the bug is fixed, when given deterministic context information such as a control flow graph from a deterministic system (Python library that generates it from the code) which the agent then performs partitioning, input and boundary analysis on the top three most suspect function for the bug. We believe this workflow gives better context to the LLM and reduces the possibility of hallucinations when tracing the code execution path with the control flow graph, and using input analysis, boundary analysis and partioning to find edge cases that tests are not currently covering will provide better outcomes than our baseline workflow which does not use these extra context items.
+
+Generating regression tests from issue descriptions is difficult because the issue description is written in natural language and may not include enough context to narrow down the search for the bug's cause for the LLM. The issue description may come from and end user with no knowledge of the interworkings of the codebase, such as a web user just using the user interface in the web browser, so the LLM may need to read the entire codebase to understand what the project is before starting, which can increase the context usage reading unnecessary files. The codebase's structure may help or hinder the LLM: a codebase with clear design patterns and low cyclomatic complexity is far easier to navigate than one without clear structure or large functions that handle multiple use cases.
+
+We chose this question because earlier course assignments showed that agent-written tests got much better when we gave the agent our own partitions and boundary value analysis. This project tests whether the agent can produce that test-design context itself.
+
+\subsection{Research Question}
+\textbf{Research Question:} Can providing a DeepSeek-Flash agent with a specification first workflow that is heavily focused on test preparation procedures such as partitioning, boundary value analysis, control graphs and overall coverage produce more effective regression tests than the baseline given?
+
+\section{Method and Experimental Design}
+\label{sec:method}
+
+\subsection{Setup}
+All runs use DeepSeek-Flash 4.1 (\texttt{deepseek/deepseek-flash} via LiteLLM) with default sampling, driven by mini-SWE-agent~\cite{minisweagent}, a minimal version of SWE-agent~\cite{sweagent}. Each instance runs in its prebuilt SWE-bench~\cite{swebench} Docker image at the buggy commit, with a 100-step limit, a 300\,s command timeout, and networking disabled (\texttt{--network none}). The agent sees only the issue text and the repository; it never sees the reference fix or test patch. It stops when it prints \texttt{COMPLETE\_TASK\_AND\_SUBMIT\_FINAL\_OUTPUT} or hits the step limit, and our harness submits the \texttt{git diff} of the test files it changed. We evaluate on all 433 SWT-Bench~\cite{swtbench} Verified instances.
+
+\subsection{Agent Configurations}
+We compare three configurations, each a mini-swe-agent YAML file in our repository:
+\begin{enumerate}
+  \item \textbf{Baseline:} \texttt{default\_swe\_mini\_config.yaml} (commit \texttt{18a4195}), mini-swe-agent's default prompt, which asks the agent to solve the issue.
+  \item \textbf{New workflow without CFG and behavioral analysis:} \texttt{new\_workflow\_without\_cfg\_or\_partition.yaml} (commit \texttt{18a4195}). It instructs the agent to reproduce the issue, add at most 3 new tests, and keep only tests that fail for a reason the issue explains, a run-and-filter loop that follows LIBRO~\cite{libro}.
+  \item \textbf{New workflow with CFG and behavioral analysis:} \texttt{new\_workflow\_complete.yaml} (commit \texttt{5bde32f}). It adds two steps between reproducing the issue and writing tests: build a control flow graph of the functions the reproduction script executes, and write an input/output partition table with boundary values for those functions, following an example in the prompt.
+\end{enumerate}
+Splitting the new workflow in two separates the gain from the test-writing instructions from the gain from the CFG and behavioral analysis.
+
+\textbf{Why the CFG may help.} Unaided LLM tests often exercise the wrong path or check the wrong condition. LLMCFG-TGen~\cite{llmcfgtgen} found that an LLM-built control flow graph produces better test cases than an unaided LLM. Our harness builds the graph with python-graphs~\cite{pythongraphs,bieber2020} and sends it with the prompt, so the agent can narrow its search to the functions behind the bug. Partitioning and boundary analysis target edge cases the existing suite lacks. The tradeoff is cost: the graph adds tokens to every request.
+
+\subsection{Evaluation}
+We ran each configuration twice and report the average numbers of resolved, unresolved, and error instances, along with cost per run. An instance is resolved if at least one new test fails before the reference fix and passes after it, and no new test fails after the fix.
+\section{Results}
+\label{sec:results}
+The full new workflow resolved 375 instances on average, 101.5 more than the baseline's 273.5 (Table~\ref{tab:results}). Most of that gain came from the more specific test-generation instructions: the workflow without CFG and behavioral analysis resolved 366.5 instances, 93 more than the baseline. Adding the CFG and behavioral analysis resolved 8.5 more instances on average. The new workflows also cut error instances from 12 to 2.
+
+The gains came with higher cost. Each run cost \$4.50 for the baseline, \$5.03 for the new workflow without CFG and behavioral analysis, and \$5.20 for the full new workflow.
+
+\begin{table}[htbp]
+\caption{Average of two runs per configuration on SWT-Bench Verified (433 instances). Runs: baseline \texttt{baseline-original-mini-v1}/\texttt{-v2}; no CFG/BA \texttt{no-cfg-v1}/\texttt{-v2}; CFG + BA \texttt{run-v8}/\texttt{run-v10}}
+\label{tab:results}
+\centering
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+ & \textbf{Baseline} & \textbf{New, no CFG/BA} & \textbf{New, CFG + BA} \\
+\midrule
+Resolved instances   & 273.5   & 366.5   & 375     \\
+Unresolved instances & 147.5   & 64.5    & 56      \\
+Error instances      & 12      & 2       & 2       \\
+Cost per run         & \$4.50  & \$5.03  & \$5.20  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% TODO: Include the main findings from the case studies here.
+
+\section{Test Quality Analysis}
+\label{sec:quality}
+We inspected the tests from one run of each configuration: the default baseline (run \texttt{baseline-original-mini-v1}, 274 resolved), the new workflow without CFG and behavioral analysis (run \texttt{no-cfg-v2}, 369 resolved), and the full new workflow (run \texttt{run-v10}, 376 resolved). All three runs cover the same 433 instances. Table~\ref{tab:paired} counts each pattern of outcomes.
+
+\begin{table}[htbp]
+\caption{Outcome patterns across the three configurations, 433 instances (Y = resolved)}
+\label{tab:paired}
+\centering
+\begin{tabular}{@{}cccrl@{}}
+\toprule
+\textbf{Base.} & \textbf{No-CFG} & \textbf{Full} & \textbf{Count} & \textbf{Reading} \\
+\midrule
+Y & Y & Y & 259 & All succeed \\
+-- & Y & Y & 98 & New workflows only \\
+-- & -- & -- & 42 & All fail \\
+Y & -- & Y & 10 & CFG recovers a no-CFG loss \\
+-- & Y & -- & 10 & CFG loses a no-CFG win \\
+-- & -- & Y & 9 & Full workflow only \\
+Y & -- & -- & 3 & Baseline only \\
+Y & Y & -- & 2 & CFG loses a shared win \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Case selection.} We analyzed seven distinct instances (Table~\ref{tab:cases}). We sorted instances by ID and took the first two in each category, skipping instances that errored in the harness (\texttt{astropy-8872} errored in all three runs). Successful means all three configurations succeed; unsuccessful means all three fail. For the disagreement category we took the first instance by ID in each direction of the comparison our research question asks about, full vs.\ no-CFG: \texttt{django-11400} (only no-CFG succeeds) and \texttt{django-11239} (only full succeeds). We added \texttt{astropy-13033} for a diagnostic reason: it is the first instance of the largest disagreement pattern, where both new workflows succeed and the baseline fails. Appendix~\ref{app:instances} gives the full analysis of each instance.
+
+\begin{table}[htbp]
+\caption{Analyzed instances (F = fail, P = pass, E = error; before fix $\rightarrow$ after fix)}
+\label{tab:cases}
+\centering
+\footnotesize
+\begin{tabular}{@{}p{1.45cm}p{0.62cm}p{0.62cm}p{0.62cm}p{3.3cm}@{}}
+\toprule
+\textbf{Instance} & \textbf{Base.} & \textbf{No-CFG} & \textbf{Full} & \textbf{Main cause} \\
+\midrule
+astropy-12907 & F$\rightarrow$P & F$\rightarrow$P & F$\rightarrow$P & All three write near-identical exact-matrix tests \\
+astropy-13236 & F$\rightarrow$P & F$\rightarrow$P & F$\rightarrow$P & New workflows: weak either/or assertions \\
+astropy-13398 & Empty & F$\rightarrow$F & Empty & Base.: wrote no test; No-CFG: wrong expected value; Full: test file dropped by patch extraction \\
+django-10554 & P$\rightarrow$P & E$\rightarrow$E & E$\rightarrow$E & No test reproduces the bug \\
+django-11400 & F$\rightarrow$P & F$\rightarrow$P & F$\rightarrow$F & Full: expected order contradicts its setup \\
+django-11239 & Empty & F$\rightarrow$F & E$\rightarrow$P & No-CFG: guessed the wrong interface; Full: tested the fix's real interface \\
+astropy-13033 & Empty & F$\rightarrow$P & F$\rightarrow$P & Base.: fixed the code, wrote no test \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Baseline vs.\ new workflows.} The default baseline's prompt asks the agent to solve the issue, so it often fixes the source code instead of writing a test. Our harness keeps only test-file changes, so those runs submit an empty patch. The baseline submitted an empty patch in 77 of its 159 unresolved instances; neither new workflow did so in more than 3. Explicit test-writing instructions remove the baseline's largest failure mode. Of the 98 instances that both new workflows resolve and the baseline does not, the baseline submitted an empty patch in 50 and hit a harness error in 9.
+
+\textbf{Full vs.\ no-CFG.} The full workflow resolved 19 instances the no-CFG workflow did not and lost 12, a net gain of 7. In the 19 gains, the no-CFG test failed even after the fix in 11 and never failed before the fix in 7. In the 12 losses, the full workflow's test failed after the fix in 7, including 4 wrong expected values we inspected (\texttt{django-11400}, \texttt{django-12125}, \texttt{django-14999}, \texttt{django-15252}). Three losses were not test-quality failures: patch extraction dropped fixture files or tests in \texttt{sphinx-9711} and \texttt{sphinx-11510}, and a grader parsing bug lost a correct result in \texttt{django-13809}.
+
+\textbf{What the cases reveal.} When all three configurations succeed, they write nearly the same test, so the CFG adds little where the bug is easy to localize from the issue. Where the CFG helped, it pointed the agent at the code the fix changes: in \texttt{django-11239} the full workflow tested the environment variables the fix sets, while the no-CFG workflow guessed command-line flags the fix never adds. Where it hurt, the full workflow found the right behavior but got the expected value or measurement scope wrong (\texttt{django-11400}). A partition table does not by itself make the agent check that its expected output matches the fixed behavior. Both new workflows' preference for property checks can also become a weak assertion: in \texttt{astropy-13236} they accept either a warning or the fixed behavior. The patch-extraction bug emptied the full workflow's patch for \texttt{astropy-13398}, so its measured gain is likely an underestimate.
+
+\section{Threats to Validity}
+\label{sec:threats}
+\begin{itemize}
+  \item \textbf{Few runs.} Each configuration was run only twice. More runs would give a larger sample for averaging, but we had already spent about \$50 on DeepSeek API usage.
+  \item \textbf{Behavioral analysis prompt wording.} We tried several variations of the behavioral analysis example, from multiple examples to a plain-English description, and each performed similarly. The 8.5-instance average gain from CFG and behavioral analysis may depend on how this part of the prompt is written.
+  \item \textbf{Answer lookup.} An early version of the new workflow tried to search GitHub for the instance's fix. We disabled network access and forbade online lookup, but this shows that agent results can be inflated if the agent is given too much freedom.
+  \item \textbf{Patch extraction.} Our harness drops new test files with no bare \texttt{assert} and new non-\texttt{.py} files as scratch. This removed valid fixtures and tests in at least 5 of the full workflow's instances (\texttt{astropy-13398}, \texttt{django-15098}, \texttt{sphinx-9461}, \texttt{sphinx-9711}, \texttt{sphinx-11510}), so some results measure our harness, not the agent.
+  \item \textbf{Task mismatch in the default baseline.} The default mini-swe-agent prompt asks the agent to fix the issue, not to test it. The baseline submitted empty patches in 77 of its 159 unresolved instances, in every case we inspected because it changed only source code. Much of the gap between the baseline and our workflows therefore measures asking for tests at all, not test-design quality; the comparison with the no-CFG workflow isolates the CFG and behavioral analysis.
+  \item \textbf{Grader parsing.} The SWT-Bench Django log parser does not recognize unittest's \texttt{FAIL} result word, so a \texttt{FAIL} line can swallow the next test's \texttt{ok}. This can affect any Django instance in any run.
+  \item \textbf{Preserved predictions.} The predictions file for the earlier no-CFG run (\texttt{no-cfg-v1}) was overwritten by a later rerun, so its evaluated patches survive only in the evaluation logs. We therefore took every patch in our case analyses from the evaluation logs.
+\end{itemize}
+% TODO
+
+\section{Conclusion}
+\label{sec:conclusion}
+More specific test-generation instructions gave the largest gains, raising average resolved instances from 273.5 to 366.5. The CFG and behavioral analysis added 8.5 more resolved instances on average and could be tuned for better results. DeepSeek tries to cheat on SWT-Bench when given too much freedom, so network access must be disabled. Measuring the gains from better prompt and context engineering empirically was a useful result in itself.
+
+\textbf{Future work.} We would try more plain-text descriptions of behavioral analysis, comparing on-point and off-point descriptions with single examples. We would also try other control flow graph libraries, make the control flow graph smaller, and make the prompt more concise.
+
+\begin{thebibliography}{00}
+\bibitem{minisweagent} SWE-agent team, ``mini-SWE-agent,'' GitHub repository. [Online]. Available: \url{https://github.com/SWE-agent/mini-swe-agent}
+\bibitem{sweagent} J.~Yang, C.~E.~Jimenez, A.~Wettig, K.~Lieret, S.~Yao, K.~Narasimhan, and O.~Press, ``SWE-agent: Agent-computer interfaces enable automated software engineering,'' in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2024.
+\bibitem{swebench} C.~E.~Jimenez, J.~Yang, A.~Wettig, S.~Yao, K.~Pei, O.~Press, and K.~Narasimhan, ``SWE-bench: Can language models resolve real-world GitHub issues?,'' in \emph{International Conference on Learning Representations (ICLR)}, 2024.
+\bibitem{swtbench} N.~M\"undler, M.~N.~M\"uller, J.~He, and M.~Vechev, ``SWT-Bench: Testing and validating real-world bug-fixes with code agents,'' in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2024.
+\bibitem{libro} S.~Kang, J.~Yoon, and S.~Yoo, ``Large language models are few-shot testers: Exploring LLM-based general bug reproduction,'' in \emph{Proc. IEEE/ACM 45th International Conference on Software Engineering (ICSE)}, 2023.
+\bibitem{llmcfgtgen} Z.~Yang, C.~Cui, T.~Li, R.~Huang, N.~Niu, D.~Towey, and S.~Guo, ``LLMCFG-TGen: Using LLM-generated control flow graphs to automatically create test cases from use cases,'' arXiv preprint arXiv:2512.06401, 2025.
+\bibitem{pythongraphs} Google Research, ``python-graphs,'' GitHub repository. [Online]. Available: \url{https://github.com/google-research/python-graphs}
+\bibitem{bieber2020} D.~Bieber, C.~Sutton, H.~Larochelle, and D.~Tarlow, ``Learning to execute programs with instruction pointer attention graph neural networks,'' in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2020.
+\end{thebibliography}
+
+\appendix
+
+\subsection{Detailed Instance Analyses}
+\label{app:instances}
+``Baseline'' is run \texttt{baseline-original-mini-v1}, ``no-CFG'' is run \texttt{no-cfg-v2}, and ``full'' is run \texttt{run-v10}. A test resolves an instance if at least one new test goes from fail to pass when the reference fix is applied and no new test fails after the fix.
+
+\subsubsection{astropy-12907 (all succeed)}
+\textbf{Issue:} \texttt{separability\_matrix} does not compute separability correctly for nested compound models. \textbf{Tests:} all three configurations added one test to \texttt{test\_separable.py} that builds \texttt{Pix2Sky\_TAN() \& (Linear1D(10) \& Linear1D(5))} and compares the result with the expected $4\times4$ block-diagonal matrix. The baseline also checks \texttt{is\_separable}. \textbf{Before the fix:} the bottom-right block came back all \texttt{True}, so the two linear models looked coupled. \textbf{After the fix:} the matrix matches and every test passes. \textbf{Meaningful?} Yes. It is the issue's own example, it checks the exact behavior the fix changes, and it covers 100\% of the changed lines. \textbf{What it reveals:} on a bug that is easy to localize from the issue text, neither the test-writing instructions nor the CFG change the test the agent writes.
+
+\subsubsection{astropy-13236 (all succeed)}
+\textbf{Issue:} stop automatically converting a structured \texttt{numpy} array added to a \texttt{Table} into an \texttt{NdarrayMixin}; add it as a \texttt{Column} instead. \textbf{Baseline test:} edits the existing \texttt{test\_ndarray\_mixin} to assert that structured arrays become \texttt{Column} objects. \textbf{No-CFG and full tests:} each adds two new tests (table creation and column assignment) that accept either outcome: a \texttt{Column}, or an \texttt{NdarrayMixin} with a \texttt{FutureWarning}. \textbf{Before the fix:} all tests fail, because the array becomes an \texttt{NdarrayMixin} without a warning. \textbf{After the fix:} all pass. \textbf{Meaningful?} Mostly. The baseline's assertion matches the fixed behavior exactly. The new workflows' either/or assertions hedge between two possible fixes, so they would also pass a fix that only adds a warning. All three cover 25\% of the changed lines, against 50\% for the reference test. \textbf{What it reveals:} the new workflows' preference for property checks can turn into a weak assertion when the issue offers more than one possible fix.
+
+\subsubsection{astropy-13398 (all fail)}
+\textbf{Issue:} a feature request for a direct ITRS-to-observed (AltAz, HADec) transformation that stays within the ITRS and is independent of observation time. \textbf{Baseline:} the agent implemented the feature, adding \texttt{itrs\_observed\_transforms.py}, and wrote no test. Our harness keeps only test-file changes, so the submitted patch was empty. \textbf{No-CFG test:} three tests that place a point 10\,km above an observatory and expect it at the zenith (altitude $90^\circ$) and at zero hour angle, using frames with no \texttt{obstime}. \textbf{Before the fix:} they fail, with errors from the missing \texttt{obstime} (\texttt{'NoneType' object has no attribute 'scale'}) and an altitude of $86.3^\circ$. \textbf{After the fix:} they get $-9.6^\circ$ altitude and a nonzero hour angle, so they still fail. \textbf{Full test:} a new file, \texttt{test\_itrs\_observed\_transformations.py}, with three tests (an overhead point at the zenith, time invariance, and the inverse transform) that failed on the unfixed code as intended. The file uses only \texttt{assert\_quantity\_allclose}, which our extraction regex (\texttt{\textbackslash bassert\textbackslash b}) does not match, so it was dropped as scratch and the patch was empty. \textbf{Meaningful?} The no-CFG test encodes a model of the fixed behavior that the real fix does not match. The full test targets the issue's stated properties, but it was never evaluated. \textbf{What it reveals:} the three failures have three different causes: a task mismatch, a wrong expectation, and a harness bug.
+
+\subsubsection{django-10554 (all fail)}
+\textbf{Issue:} a union queryset with ordering breaks when a derived queryset (\texttt{qs.order\_by().values\_list('pk')}) is evaluated and the original is evaluated again. \textbf{Baseline test:} follows the issue's steps on the \texttt{Number} model. \textbf{Before and after the fix:} it passes both times on the SQLite test database, so it never detects the bug (coverage delta 0). \textbf{No-CFG and full tests:} both put \texttt{order\_by('order')} on an operand of the union. \textbf{Before and after the fix:} both error with \textit{``ORDER BY not allowed in subqueries of compound statements''}, a restriction Django enforces regardless of the fix. \textbf{Meaningful?} No. The baseline test is a faithful copy of the issue that cannot fail in this environment, and the new workflows build a query Django rejects. \textbf{What it reveals:} no configuration ran its test against the conditions that trigger the bug (the reference test uses annotated and unannotated querysets). This is also the instance an early version of the new workflow tried to look up on GitHub.
+
+\subsubsection{django-11400 (only full fails)}
+\textbf{Issue:} admin list filters ignore the related model's ordering; \texttt{RelatedOnlyFieldListFilter} should use the related \texttt{ModelAdmin.ordering}. \textbf{Tests:} all three add \texttt{Meta.ordering = ('name',)} to \texttt{Employee}. The baseline and no-CFG tests register an \texttt{Employee} admin ordered by \texttt{name} and expect \texttt{[Jack Red, John Blue]}. The full test orders by \texttt{-name} but also expects the ascending \texttt{['Jack Red', 'John Blue']}. \textbf{Before the fix:} the baseline and no-CFG tests get \texttt{[John Blue, Jack Red]} and fail; the full test also gets \texttt{['John Blue', 'Jack Red']} and fails. \textbf{After the fix:} the baseline and no-CFG tests pass. The full test still gets \texttt{['John Blue', 'Jack Red']}, the correct result for \texttt{-name}, and fails, which makes the instance unresolved even though its other tests went fail-to-pass. \textbf{Meaningful?} The baseline and no-CFG tests are: their expected order differs from what the unfixed code returns. The full test is not: its expected value is wrong, and even with the right expectation it would pass before the fix. \textbf{What it reveals:} the full workflow found the right behavior but did not check its expected value against its own setup.
+
+\subsubsection{django-11239 (only full succeeds)}
+\textbf{Issue:} add support for PostgreSQL client certificates and keys to \texttt{dbshell}. \textbf{Baseline:} the agent edited \texttt{django/db/backends/postgresql/client.py} and wrote no test, so the patch was empty. \textbf{No-CFG test:} expects \texttt{dbshell} to pass the SSL options as \texttt{psql} command-line flags (\texttt{--sslmode}, \texttt{--sslcert}, and so on). \textbf{Before and after the fix:} it fails both times, because the fix passes the options another way and never adds these flags. \textbf{Full test:} mocks \texttt{subprocess.run} and asserts that the \texttt{PGSSLMODE}, \texttt{PGSSLROOTCERT}, \texttt{PGSSLCERT} and \texttt{PGSSLKEY} environment variables are set. \textbf{Before the fix:} it errors with \texttt{KeyError: 'PGSSLMODE'}. \textbf{After the fix:} it passes, covering 100\% of the changed lines. \textbf{Meaningful?} The full test is: it checks the interface the fix actually uses. The no-CFG test checks a plausible interface that the fix does not implement. \textbf{What it reveals:} the full workflow queried the CFG for \texttt{runshell\_db} before writing its test, which led it to how that method hands settings to \texttt{psql}. It tested that interface instead of guessing.
+
+\subsubsection{astropy-13033 (both new workflows succeed)}
+\textbf{Issue:} \texttt{TimeSeries} raises a misleading exception when a required column other than \texttt{time} is removed. \textbf{Baseline:} the agent edited \texttt{astropy/timeseries/core.py} to improve the error message and wrote no test, so the patch was empty. It also searched the file system for other astropy versions and for the error message text. \textbf{No-CFG and full tests:} both set \texttt{\_required\_columns = ["time", "flux"]}, remove \texttt{flux}, and check that the \texttt{ValueError} message mentions \texttt{flux}. \textbf{Before the fix:} the message was \textit{``expected 'time' as the first columns but found 'time'''}, so the check failed. \textbf{After the fix:} the message names the missing column and the tests pass. \textbf{Meaningful?} Yes. They check only that the message identifies the problem, not its exact wording, so they do not depend on how the fix phrases the error. \textbf{What it reveals:} this is the most common reason the new workflows beat the baseline: the baseline solved the issue instead of testing it.
+
+\subsection{Generated Test Excerpts}
+\label{app:tests}
+\textbf{django-11400}, baseline (passed; no-CFG is similar):
+{\footnotesize
+\begin{verbatim}
+class EmployeeAdminWithOrdering(ModelAdmin):
+    ordering = ('name',)
+...
+expected = [(self.jack.pk, 'Jack Red'),
+            (self.john.pk, 'John Blue')]
+self.assertEqual(filterspec.lookup_choices,
+                 expected)
+\end{verbatim}}
+\noindent Full workflow (failed):
+{\footnotesize
+\begin{verbatim}
+class EmployeeAdminWithOrdering(ModelAdmin):
+    ordering = ('-name',)    # John, Jack
+...
+self.assertEqual(
+    [c['display'] for c in choices[1:3]],
+    ['Jack Red', 'John Blue'])  # ascending
+\end{verbatim}}
+
+\textbf{django-11239}, no-CFG (failed):
+{\footnotesize
+\begin{verbatim}
+self.assertEqual(self._run_it({...,
+        'sslmode': 'verify-ca', ...}),
+    (['psql', '-U', 'someuser', ...,
+      '--sslmode=verify-ca', ...,
+      'dbname'], 'somepassword'))
+\end{verbatim}}
+\noindent Full workflow (passed):
+{\footnotesize
+\begin{verbatim}
+def _mock_subprocess_run(*args,
+                         env=os.environ, **kw):
+    self.assertEqual(env['PGSSLMODE'],
+                     'verify-ca')
+    self.assertEqual(env['PGSSLCERT'],
+                     'client_cert_chain.crt')
+    ...
+with mock.patch('subprocess.run',
+                new=_mock_subprocess_run):
+    DatabaseClient.runshell_db({...})
+\end{verbatim}}
+
+\textbf{astropy-13236}, baseline (passed):
+{\footnotesize
+\begin{verbatim}
+-    assert isinstance(t['a'], NdarrayMixin)
++    assert isinstance(t['a'], Column)
+\end{verbatim}}
+\noindent Full workflow (passed, weaker assertion):
+{\footnotesize
+\begin{verbatim}
+assert got_future_warning or \
+    isinstance(t['a'], Column)
+\end{verbatim}}
+
+\subsection{Additional Result Tables}
+\label{app:tables}
+
+\begin{table}[htbp]
+\caption{Approximate runtime per full run of 433 instances}
+\label{tab:runtime}
+\centering
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Stage} & \textbf{Parallel workers} & \textbf{Wall-clock time} \\
+\midrule
+Agent generation (our harness) & 10 & $\sim$1\,h \\
+SWT-Bench evaluation           & 8  & $\sim$1\,h \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Each configuration was run twice, so the six runs in Table~\ref{tab:results} took about 12 hours of generation and evaluation in total.
+% TODO
+
+\end{document}
