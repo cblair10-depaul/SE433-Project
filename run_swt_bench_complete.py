@@ -27,10 +27,10 @@ from minisweagent.run.benchmarks.swebench import get_swebench_docker_image_name
 PROJECT_DIR = Path(__file__).resolve().parent
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "new_workflow_complete.yaml"
-BASELINE_CONFIG_PATH = PROJECT_DIR / "new_workflow_without_cfg_or_partition.yaml"
+NO_CFG_CONFIG_PATH = PROJECT_DIR / "new_workflow_without_cfg_or_partition.yaml"
 DEFAULT_MINI_SWE_CONFIG_PATH = PROJECT_DIR / "default_swe_mini_config.yaml"
 OUTPUT_DIR = PROJECT_DIR / "swebench_predictions"
-BASELINE_OUTPUT_DIR = PROJECT_DIR / "swebench_predictions_baseline"
+NO_CFG_OUTPUT_DIR = PROJECT_DIR / "swebench_predictions_no_cfg"
 DEFAULT_MINI_SWE_OUTPUT_DIR = PROJECT_DIR / "swebench_predictions_default_mini_swe"
 PREDICTIONS_JSONL_NAME = "predictions.jsonl"
 PREDICTIONS_JSON_NAME = "preds.json"
@@ -307,7 +307,7 @@ def parse_args() -> argparse.Namespace:
                         help=f"instances to run at the same time (default: {DEFAULT_WORKERS})")
     config_group = parser.add_mutually_exclusive_group()
     config_group.add_argument("--new-workflow-without-cfg-or-partition", action="store_true",
-                              help=f"use {BASELINE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
+                              help=f"use {NO_CFG_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
     config_group.add_argument("--default-mini-swe-config", action="store_true",
                               help=f"use {DEFAULT_MINI_SWE_CONFIG_PATH.name} instead of {CONFIG_PATH.name}")
     args = parser.parse_args()
@@ -336,7 +336,7 @@ def run_workflow():
     print("SWT-Bench Integration for mini-swe-agent")
 
     if args.new_workflow_without_cfg_or_partition:
-        config_path, output_dir, run_id = BASELINE_CONFIG_PATH, BASELINE_OUTPUT_DIR, "mini-swe-agent-baseline"
+        config_path, output_dir, run_id = NO_CFG_CONFIG_PATH, NO_CFG_OUTPUT_DIR, "mini-swe-agent-no-cfg"
     elif args.default_mini_swe_config:
         config_path, output_dir, run_id = (DEFAULT_MINI_SWE_CONFIG_PATH, DEFAULT_MINI_SWE_OUTPUT_DIR,
                                            "mini-swe-agent-default")
