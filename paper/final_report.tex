@@ -31,12 +31,8 @@ Chicago, IL, USA}
 \maketitle
 
 \begin{abstract}
-% TODO: Abstract.
+LLM coding agents can write regression tests from GitHub issues, but their tests often exercise the wrong code path or assume the wrong fixed behavior. We ask whether a specification-first workflow, in which a DeepSeek-Flash agent builds a control flow graph and writes partition and boundary value tables before writing tests, produces better reproduction tests than the default mini-swe-agent configuration. On the 433 SWT-Bench Verified instances, averaged over two runs, the default configuration resolved 273.5 instances, a workflow with explicit test-writing instructions resolved 366.5, and the full workflow with the control flow graph and behavioral analysis resolved 375. Most of the gain came from asking for tests explicitly. And the control flow graph added a small further gain at a slightly higher cost. A case analysis shows that most remaining failures come from wrong expected values and from our own patch extraction.
 \end{abstract}
-
-\begin{IEEEkeywords}
-% TODO: Keywords.
-\end{IEEEkeywords}
 
 \section{Research Question and Motivation}
 \label{sec:rq}
@@ -91,8 +87,6 @@ Cost per run         & \$4.50  & \$5.03  & \$5.20  \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-% TODO: Include the main findings from the case studies here.
 
 \section{Test Quality Analysis}
 \label{sec:quality}
@@ -149,15 +143,12 @@ astropy-13033 & Empty & F$\rightarrow$P & F$\rightarrow$P & Base.: fixed the cod
 \section{Threats to Validity}
 \label{sec:threats}
 \begin{itemize}
-  \item \textbf{Few runs.} Each configuration was run only twice. More runs would give a larger sample for averaging, but we had already spent about \$50 on DeepSeek API usage.
-  \item \textbf{Behavioral analysis prompt wording.} We tried several variations of the behavioral analysis example, from multiple examples to a plain-English description, and each performed similarly. The 8.5-instance average gain from CFG and behavioral analysis may depend on how this part of the prompt is written.
-  \item \textbf{Answer lookup.} An early version of the new workflow tried to search GitHub for the instance's fix. We disabled network access and forbade online lookup, but this shows that agent results can be inflated if the agent is given too much freedom.
-  \item \textbf{Patch extraction.} Our harness drops new test files with no bare \texttt{assert} and new non-\texttt{.py} files as scratch. This removed valid fixtures and tests in at least 5 of the full workflow's instances (\texttt{astropy-13398}, \texttt{django-15098}, \texttt{sphinx-9461}, \texttt{sphinx-9711}, \texttt{sphinx-11510}), so some results measure our harness, not the agent.
-  \item \textbf{Task mismatch in the default baseline.} The default mini-swe-agent prompt asks the agent to fix the issue, not to test it. The baseline submitted empty patches in 77 of its 159 unresolved instances, in every case we inspected because it changed only source code. Much of the gap between the baseline and our workflows therefore measures asking for tests at all, not test-design quality; the comparison with the no-CFG workflow isolates the CFG and behavioral analysis.
-  \item \textbf{Grader parsing.} The SWT-Bench Django log parser does not recognize unittest's \texttt{FAIL} result word, so a \texttt{FAIL} line can swallow the next test's \texttt{ok}. This can affect any Django instance in any run.
-  \item \textbf{Preserved predictions.} The predictions file for the earlier no-CFG run (\texttt{no-cfg-v1}) was overwritten by a later rerun, so its evaluated patches survive only in the evaluation logs. We therefore took every patch in our case analyses from the evaluation logs.
+  \item \textbf{Few runs.} Budget (about \$50 of API cost) limited us to two runs per configuration. The two no-CFG runs differ by 5 resolved instances, so the 8.5-instance CFG gain may be within run-to-run variation.
+  \item \textbf{Prompt wording.} Variations of the behavioral analysis example performed similarly, so the CFG gain may depend on how that part of the prompt is written.
+  \item \textbf{Answer lookup.} An early new-workflow run tried to search GitHub for the fix. We disabled networking, but agents with network access can inflate results.
+  \item \textbf{Harness and grader bugs.} Our patch extraction drops new test files without a bare \texttt{assert} and new non-\texttt{.py} files, which removed valid tests in at least 5 full-workflow instances. The SWT-Bench Django log parser misses unittest's \texttt{FAIL} result word, which can hide correct results.
+  \item \textbf{Baseline task mismatch.} The default prompt asks the agent to fix the issue. The baseline submitted empty patches in 77 of its 159 unresolved instances, so its gap to our workflows partly measures asking for tests at all.
 \end{itemize}
-% TODO
 
 \section{Conclusion}
 \label{sec:conclusion}
@@ -286,6 +277,5 @@ SWT-Bench evaluation           & 8  & $\sim$1\,h \\
 \end{table}
 
 Each configuration was run twice, so the six runs in Table~\ref{tab:results} took about 12 hours of generation and evaluation in total.
-% TODO
 
 \end{document}
