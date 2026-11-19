@@ -54,7 +54,7 @@ We chose this question because earlier course assignments showed that agent-writ
 All runs use DeepSeek-Flash 4.1 (\texttt{deepseek/deepseek-flash} via LiteLLM) with default sampling, driven by mini-SWE-agent~\cite{minisweagent}, a minimal version of SWE-agent~\cite{sweagent}. Each instance runs in its prebuilt SWE-bench~\cite{swebench} Docker image at the buggy commit, with a 100-step limit, a 300\,s command timeout, and networking disabled (\texttt{--network none}). The agent sees only the issue text and the repository; it never sees the reference fix or test patch. It stops when it prints \texttt{COMPLETE\_TASK\_AND\_SUBMIT\_FINAL\_OUTPUT} or hits the step limit, and our harness submits the \texttt{git diff} of the test files it changed. We evaluate on all 433 SWT-Bench~\cite{swtbench} Verified instances.
 
 \subsection{Agent Configurations}
-We compare three configurations, each a mini-swe-agent YAML file in our repository:
+We compare three configurations, each a mini-swe-agent YAML file in our repository,\footnote{\url{https://github.com/cblair10-depaul/SE433-Project}} listed below:
 \begin{enumerate}
   \item \textbf{Baseline:} \texttt{default\_swe\_mini\_config.yaml} (commit \texttt{18a4195}), mini-swe-agent's default prompt, which asks the agent to solve the issue.
   \item \textbf{New workflow without CFG and behavioral analysis:} \texttt{new\_\allowbreak workflow\_\allowbreak without\_\allowbreak cfg\_\allowbreak or\_\allowbreak partition.yaml} (commit \texttt{18a4195}). It instructs the agent to reproduce the issue, add at most 3 new tests, and keep only tests that fail for a reason the issue explains, a run-and-filter loop that follows LIBRO~\cite{libro}.
@@ -168,10 +168,6 @@ More specific test-generation instructions gave the largest gains, raising avera
 \end{thebibliography}
 
 \appendix
-
-\subsection{Source Code}
-\label{app:repo}
-Our agent harness and the three agent configurations in Section~\ref{sec:method} are in the GitHub repository \texttt{SE433-Project}: \url{https://github.com/cblair10-depaul/SE433-Project}.
 
 \subsection{Detailed Instance Analyses}
 \label{app:instances}
