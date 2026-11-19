@@ -1,4 +1,7 @@
-workspaces/**
+workspaces/callgraphs/**
+workspaces/cfgs/**
+workspaces/instances/**
+workspaces/repo_cache/**
 .venv
 patch.txt
 .idea
