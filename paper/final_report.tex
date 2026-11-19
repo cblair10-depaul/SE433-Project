@@ -57,7 +57,7 @@ All runs use DeepSeek-Flash 4.1 (\texttt{deepseek/deepseek-flash} via LiteLLM) w
 We compare three configurations, each a mini-swe-agent YAML file in our repository:
 \begin{enumerate}
   \item \textbf{Baseline:} \texttt{default\_swe\_mini\_config.yaml} (commit \texttt{18a4195}), mini-swe-agent's default prompt, which asks the agent to solve the issue.
-  \item \textbf{New workflow without CFG and behavioral analysis:} \texttt{new\_workflow\_without\_cfg\_or\_partition.yaml} (commit \texttt{18a4195}). It instructs the agent to reproduce the issue, add at most 3 new tests, and keep only tests that fail for a reason the issue explains, a run-and-filter loop that follows LIBRO~\cite{libro}.
+  \item \textbf{New workflow without CFG and behavioral analysis:} \texttt{new\_\allowbreak workflow\_\allowbreak without\_\allowbreak cfg\_\allowbreak or\_\allowbreak partition.yaml} (commit \texttt{18a4195}). It instructs the agent to reproduce the issue, add at most 3 new tests, and keep only tests that fail for a reason the issue explains, a run-and-filter loop that follows LIBRO~\cite{libro}.
   \item \textbf{New workflow with CFG and behavioral analysis:} \texttt{new\_workflow\_complete.yaml} (commit \texttt{5bde32f}). It adds two steps between reproducing the issue and writing tests: build a control flow graph of the functions the reproduction script executes, and write an input/output partition table with boundary values for those functions, following an example in the prompt.
 \end{enumerate}
 Splitting the new workflow in two separates the gain from the test-writing instructions from the gain from the CFG and behavioral analysis.

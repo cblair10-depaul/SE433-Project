@@ -53,3 +53,6 @@ Each config keeps its own saved predictions, so resuming one run never skips ins
 under a different config. The evaluation command printed at the end of a run uses a matching
 `--run_id` (`mini-swe-agent-run`, `mini-swe-agent-no-cfg` or `mini-swe-agent-default`).
 
+## Logs
+Look in `workspaces/trajectories/` for a zip file. The name is arbitrary: it's the first name of the entire list of all the instances run on November 14, 2026. It's a zip file, and if you unzip it it'll have an entire run, but it's way too large for GitHub's 100Mb file limit. 
+
